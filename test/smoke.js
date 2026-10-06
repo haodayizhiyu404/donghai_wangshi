@@ -1,0 +1,1011 @@
+// smoke.js —— 数据层离线冒烟测试（node test/smoke.js）
+// 只测纯逻辑：状态栏解析 / 记录块往返 / NPC输出解析 / 提示词装配 / 转账契约 / 注入保险丝
+// 移植自蒋默单人卡同款套件：DHWJ 命名空间 + 东海往事:: 世界书前缀
+// 东海 v1 为单线配置（LINES = ['DLC·大学']）：未配置线（高中/成人）的作用域条目应安全失效
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const ROOT = path.resolve(__dirname, '..');
+const __vars = {};
+const ctx = {
+  window: {},
+  console,
+  getChatMessages: (range) => { global.__lastRange = range; return global.__msgs || []; },
+  getVariables: () => __vars,
+  replaceVariables: (v) => { const snap = JSON.parse(JSON.stringify(v)); for (const k of Object.keys(__vars)) delete __vars[k]; Object.assign(__vars, snap); },
+};
+vm.createContext(ctx);
+// 装载顺序与 build/build.js 的 ORDER 一致（含 apps/ UI 层，供引擎侧调用 UI 的用例）
+for (const f of ['src/store.js', 'src/status.js', 'src/worldbook.js', 'src/prompt.js', 'src/floor.js', 'src/apps/uikit.js', 'src/apps/wechat.js', 'src/apps/diary.js', 'src/engine.js']) {
+  vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), ctx, { filename: f });
+}
+const LW = ctx.window.DHWJ;
+let pass = 0, fail = 0;
+function eq(name, got, want) {
+  const g = JSON.stringify(got), w = JSON.stringify(want);
+  if (g === w) { pass++; console.log('  ✓ ' + name); }
+  else { fail++; console.log('  ✗ ' + name + '\n    got  ' + g + '\n    want ' + w); }
+}
+
+// ── 1. 状态栏解析 ──
+console.log('[状态栏]');
+const statusText = `<status>
+
+<环境>
+2034年8月26日 星期五|22:49|天禧城3幢901室|阴
+</环境>
+
+<沈锡元>
+着装：黑色圆领薄棉T
+姿态：靠在车边单手夹烟
+位置：霖州城南门外
+关系：克制内敛的青梅竹马，尚未告白
+心声：“到了也不放个屁。”
+</沈锡元>
+
+</status>`;
+const p = LW._parseStatusBlock(statusText);
+eq('时间', p.time, '22:49');
+eq('日期文本', p.dateText, '2034年8月26日 星期五');
+eq('user地点', p.userPlace, '天禧城3幢901室');
+eq('NPC位置', p.characters['沈锡元'].place, '霖州城南门外');
+eq('NPC姿态', p.characters['沈锡元'].posture, '靠在车边单手夹烟');
+eq('NPC关系', p.characters['沈锡元'].relation, '克制内敛的青梅竹马，尚未告白');
+eq('心声不外泄', '心声' in p.characters['沈锡元'], false);
+eq('无状态栏返回null', LW._parseStatusBlock('普通正文'), null);
+
+// ── 1.5 存储：popLast / meta / historyKeys ──
+console.log('[存储]');
+LW.Store.push('周言', [{ who: 'user', text: 'a' }, { who: '周言', text: 'b' }, { who: '周言', text: 'c' }], 100);
+const popped = LW.Store.popLast('周言', 2);
+eq('弹出条数', popped.length, 2);
+eq('弹出内容', popped[0].text, 'b');
+eq('剩余条数', LW.Store.history('周言').length, 1);
+LW.Store.setMeta('周言', { headline: '睡了没', atMainCount: 5 });
+eq('元信息读回', LW.Store.meta('周言').headline, '睡了没');
+eq('会话key列表', LW.Store.historyKeys(), ['周言']);
+LW.Store.push('撤回测试', [{ who: 'user', kind: 'text', text: 'hi' }, { who: '周言', kind: 'text', text: '在的' }], 100);
+LW.Store.push('撤回测试', [{ who: '周言', kind: 'recall', text: '' }], 100);
+const rh = LW.Store.history('撤回测试');
+eq('撤回不打断条数', rh.length, 2);
+eq('撤回标落到上一条', rh[1].recalled, true);
+eq('定点删除', LW.Store.removeAt('撤回测试', 0), true);
+eq('删除后条数', LW.Store.history('撤回测试').length, 1);
+LW.Store.removeAt('撤回测试', 0);
+eq('删空后元信息清除', LW.Store.meta('撤回测试').headline === undefined && Object.keys(LW.Store.meta('撤回测试')).length === 0, true);
+// patchAt：按下标改一条（朋友圈点赞/评论/转账翻账用）
+LW.Store.push('momPatch', [{ who: '周言', kind: 'moments', text: 't1' }, { who: '林溪', kind: 'moments', text: 't2' }], 100);
+eq('patchAt 返回值', LW.Store.patchAt('momPatch', 1, { likes: ['陈默'] }), true);
+eq('patchAt 生效', LW.Store.history('momPatch')[1].likes[0], '陈默');
+eq('patchAt 不动邻居', LW.Store.history('momPatch')[0].likes === undefined, true);
+eq('patchAt 越界', LW.Store.patchAt('momPatch', 9, { x: 1 }), false);
+LW.Store.wipeHistory();
+
+// ── 2. 记录块往返 ──
+console.log('[记录块]');
+LW.Engine = LW.Engine || {};
+LW.Engine.userName = () => '陈默';
+LW.Engine.stickers = () => ({ '偷看': 's9v34y.jpeg' });
+LW.Engine.resolveSticker = (n) => (n === '探头' ? '偷看' : (LW.Engine.stickers()[n] ? n : null));
+const msgs = [
+  { who: 'user', kind: 'text', text: '在吗', time: '22:49' },
+  { who: '周言', kind: 'text', text: '刚写完卷子', time: '' },
+  { who: '周言', kind: 'sticker', text: '偷看', time: '' },
+  { who: '周言', kind: 'poke', text: '', time: '' },
+];
+const block = LW.Floor.formatRecord('与周言的私聊', msgs, '22:49', '陈默');
+const m = block.match(LW.Floor.RECORD_RE);
+eq('块可被正则整体匹配', !!m, true);
+eq('块头', m[1].trim(), '与周言的私聊 22:49');
+eq(' sticker行', /周言：\[表情:偷看\]/.test(m[2]), true);
+eq('poke行无冒号参数', /周言：\[戳一戳\]/.test(m[2]), true);
+
+// ── 3. NPC 原始输出解析 ──
+console.log('[NPC输出解析]');
+const npcRaw = '在的\n[表情:探头]\n[语音|明天老地方]\n[戳一戳]\n[撤回]\n（思考了一下）';
+const parsed = LW.Floor.parseNpcLines(npcRaw, '周言');
+eq('解析条数', parsed.length, 5);
+eq('文字行', parsed[0], { who: '周言', kind: 'text', text: '在的', time: '' });
+eq('表情同义词解析为白名单名', parsed[1], { who: '周言', kind: 'sticker', text: '偷看', time: '' });
+eq('语音行', parsed[2], { who: '周言', kind: 'voice', text: '明天老地方', time: '' });
+eq('戳一戳行', parsed[3], { who: '周言', kind: 'poke', text: '', time: '' });
+eq('撤回行解析', parsed[4].kind, 'recall');
+eq('括号旁白被丢弃', parsed.some(x => x.text.indexOf('思考') !== -1), false);
+const grpParsed = LW.Floor.parseNpcLines('林溪：啊啊啊\n陆飞：[图片|一张试卷]\n路人甲：围观', null);
+eq('群聊发件人', grpParsed.map(x => x.who), ['林溪', '陆飞', '路人甲']);
+eq('群聊图片类型', grpParsed[1].kind, 'image');
+// 黏行剥离：AI 忘换行，把类型消息和文字写在一行 → 剥成两条，文字照常走文字行
+const glued = LW.Floor.parseNpcLines('林溪：[表情:看戏吃瓜] 哎哟，正主终于舍得在群里冒泡了？', null);
+eq('黏行剥为两条', glued.length, 2);
+eq('黏行表情条保留', glued[0].who === '林溪' && glued[0].text.indexOf('看戏吃瓜') !== -1, true);
+eq('黏行文字条', glued[1].kind, 'text');
+eq('黏行文字内容', glued[1].text, '哎哟，正主终于舍得在群里冒泡了？');
+const gluedV = LW.Floor.parseNpcLines('[语音:早点睡] 晚安', '周言');
+eq('黏行语音条', gluedV[0].kind, 'voice');
+eq('黏行语音尾巴', gluedV[1] && gluedV[1].text, '晚安');
+// 行内嵌类型消息：标签黏在句尾（「文字[表情:xxx]」）→ 依原序拆成多条，未匹配素材的表情剥壳当纯文字
+const gluedSuf = LW.Floor.parseNpcLines('真的只是搬家太忙？[表情:有什么八卦让我听听]', '周言');
+eq('句尾标签剥成两条', gluedSuf.length, 2);
+eq('句尾标签前文字', gluedSuf[0], { who: '周言', kind: 'text', text: '真的只是搬家太忙？', time: '' });
+eq('句尾未知表情剥壳为文字', gluedSuf[1], { who: '周言', kind: 'text', text: '有什么八卦让我听听', time: '' });
+const gluedMid = LW.Floor.parseNpcLines('林溪：对了[戳一戳]你人呢', null);
+eq('群聊中段标签剥成三条', gluedMid.map(x => x.kind), ['text', 'poke', 'text']);
+// 寒暄短句照常保留（不过滤——完整呈现 AI 回复，出问题时便于诊断）
+const ackKeep = LW.Floor.parseNpcLines('好的。\n收到\n明白了，我马上到', '周言');
+eq('寒暄短句保留条数', ackKeep.length, 3);
+eq('寒暄短句原样成泡', ackKeep.map(x => x.text), ['好的。', '收到', '明白了，我马上到']);
+
+// ── 4. 提示词装配 ──
+console.log('[提示词]');
+global.__msgs = [
+  { role: 'user', message: '周言把卷子递了过来。<span class="x">注</span>' },
+  { role: 'assistant', message: '<status><环境>2034年8月26日 星期五|22:49|教室|阴</环境></status>他笑了笑。' },
+  { role: 'assistant', message: '<cot>Step.1：输入解析与意图拆解</cot>真正的回复。' },
+];
+const req = LW.Prompt.private({ name: '周言', profile: '档案：班长。' }, msgs, { time: '22:49', dateText: '2034年8月26日 星期五', userPlace: '教室', npc: { place: '图书馆', posture: '坐着' } });
+const sysPrompt = req.ordered_prompts[0].content;
+eq('框架头部', sysPrompt.indexOf('数字世界') !== -1, true);
+eq('包含档案', sysPrompt.indexOf('班长') !== -1, true);
+eq('包含时间', sysPrompt.indexOf('22:49') !== -1, true);
+eq('包含NPC情境', sysPrompt.indexOf('图书馆') !== -1, true);
+eq('HTML被剥离', sysPrompt.indexOf('class="x"') !== -1, false);
+eq('status标签剥离', sysPrompt.indexOf('<环境>') !== -1, false);
+eq('状态栏内容不进主线近况', sysPrompt.indexOf('阴') !== -1, false);
+eq('正文保留', sysPrompt.indexOf('他笑了笑') !== -1, true);
+eq('cot思维链剥离', sysPrompt.indexOf('Step.1') !== -1, false);
+eq('cot剥离后正文保留', sysPrompt.indexOf('真正的回复') !== -1, true);
+eq('静默生成', req.should_silence, true);
+eq('不占用主历史', req.max_chat_history, 0);
+eq('无user宏残留·系统块', sysPrompt.indexOf('{{user}}'), -1);
+eq('无user宏残留·user轮', req.ordered_prompts[1].content.indexOf('{{user}}'), -1);
+const greq = LW.Prompt.group({ name: '高三（2）班', open: true }, [{ name: '林溪', profile: '闺蜜' }], [], null);
+eq('群提示词含成员', greq.ordered_prompts[0].content.indexOf('林溪') !== -1, true);
+eq('群档案全量不截断', greq.ordered_prompts[0].content.indexOf('- 林溪：\n闺蜜') !== -1, true);
+const greqLong = LW.Prompt.group({ name: '长档案群', open: false },
+  [{ name: '林溪', profile: 'x'.repeat(900) }], [], null);
+eq('群档案超500字保留', greqLong.ordered_prompts[0].content.indexOf('x'.repeat(900)) !== -1, true);
+eq('开放群提示', greq.ordered_prompts[0].content.indexOf('未具名的其他成员') !== -1, true);
+eq('群phone块·起始标记', greq.ordered_prompts[0].content.indexOf('<!--phone') !== -1, true);
+eq('群phone块·占位示例', greq.ordered_prompts[0].content.indexOf('{成员名}：{私聊内容}') !== -1, true);
+eq('群无user宏残留', greq.ordered_prompts[0].content.indexOf('{{user}}'), -1);
+
+const reqR = LW.Prompt.private({ name: '周言', profile: '' }, [{ who: '周言', kind: 'text', text: '在的', recalled: true }], null, null, null, null);
+eq('撤回标注进记录', reqR.ordered_prompts[0].content.indexOf('（此条已撤回）') !== -1, true);
+const reqN = LW.Prompt.private({ name: '周言', profile: '' }, [
+  { who: 'user', kind: 'text', text: '早', day: '2034年8月25日 星期四', time: '22:00' },
+  { who: '周言', kind: 'text', text: '嗯', day: '2034年8月26日 星期五', time: '08:00' },
+], { time: '22:49', dateText: '2034年8月26日 星期五', userPlace: '', npc: null }, null, null, null);
+const spN = reqN.ordered_prompts[0].content;
+eq('私聊记录带对方名', spN.indexOf('周言：嗯') !== -1, true);
+eq('私聊记录带user名', spN.indexOf('陈默：早') !== -1, true);
+eq('跨天时间标·昨天', spN.indexOf('[昨天 22:00]') !== -1, true);
+eq('跨天时间标·今天', spN.indexOf('[今天 08:00]') !== -1, true);
+// 近期通话记忆：近三天通话（正常带挂断时生成的纪要，中断带完整原文）带进私聊提示词
+const reqCall = LW.Prompt.private({ name: '周言', profile: '' }, [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, null,
+  [{ head: '视频通话 · 03:24（昨天）', text: '两人谈到项目进度，约定周五交初稿。', interrupted: false }]);
+const spCall = reqCall.ordered_prompts[0].content;
+eq('近期通话段头', spCall.indexOf('## 近期通话') !== -1, true);
+eq('通话记忆进提示词', spCall.indexOf('约定周五交初稿') !== -1, true);
+const greq2 = LW.Prompt.group({ name: '高三（2）班', open: false, style: '有班主任在，发言收敛' }, [{ name: '林溪', profile: '闺蜜' }], [], null);
+eq('群氛围字段', greq2.ordered_prompts[0].content.indexOf('有班主任在，发言收敛') !== -1, true);
+const greq3 = LW.Prompt.group({ name: '霖附吃瓜二手交易市场', open: true, crowd: '类型：校园公共群，超百人。\n风格：信息量大、节奏快。\n特殊规则：可同时存在多个话题，成员不一定会直接回应。' }, [], [], null);
+const gtxt3 = greq3.ordered_prompts[0].content;
+eq('群crowd逐字进提示词', gtxt3.indexOf('其余成员设定：\n类型：校园公共群，超百人。') !== -1, true);
+eq('群crowd多行保留', gtxt3.indexOf('特殊规则：可同时存在多个话题') !== -1, true);
+LW.Store.push('stampT', [{ who: 'user', kind: 'text', text: 'x', time: '22:00' }], 100);
+eq('落库自动补日期', LW.Store.history('stampT')[0].day, '2034年8月26日 星期五');
+LW.Store.push('stampT2', [{ who: '周言', kind: 'text', text: 'y', time: '' }], 100);
+eq('NPC消息自动补时钟', LW.Store.history('stampT2')[0].time, '22:49');
+eq('NPC消息自动补日期', LW.Store.history('stampT2')[0].day, '2034年8月26日 星期五');
+
+// ── 8. 世界书通讯录：群字段透传 ──
+console.log('[世界书]');
+ctx.getCharLorebooks = () => ({ primary: '测试书' });
+ctx.getWorldbook = async () => [
+  { comment: '东海往事::通讯录', enabled: true, content: JSON.stringify({
+    'DLC·高中': {
+      contacts: [{ name: '周言', avatar: 'a.png' }, { name: '张裕民', avatar: 'z.png' }, { name: '沈锡元', avatar: 's.png' }, { name: '许嘉文', avatar: 'x.png' }],
+      groups: [{
+        name: '霖附吃瓜二手交易市场', open: true, avatar: 'g.png',
+        style: '节奏快', crowd: '超百人，多为陌生人',
+        members: ['周言', '{{user}}', '陆飞', '外校生']
+      }]
+    }
+  }) },
+  { comment: '周言', enabled: true, content: '周言的单人条目内容（短标题兜底）' },
+  { comment: 'NPC（DLC·高中-核心人员）', enabled: true, content: '[NPC设定与时空演化规则]\n以下NPC基础档案均以故事起点（高中阶段/18岁）为初始基线。\n随着剧情推进与时间线跃迁（如大学、成人篇DLC），所有角色的年龄、社会身份、生活境遇与性格侧重均会随年岁自然演化与覆盖。若后续模块（如成人篇）给出了新的演化档案，一律以最新时间线档案为最高判定标准，基础档案仅作为“过往历史与少年底色”参考，严禁机械套用早期身份干扰当前剧情。\n\n[NPC·陆飞]\n性别: 男。\n身份: 篮球队（高中版）。\n\n[NPC·张裕民]\n性别: 男。\n身份: 班主任。' },
+  { comment: 'NPC（DLC·大学）', enabled: true, content: '[NPC·陆飞]\n性别: 男。\n身份: 运动康复专业（大学版），与{{user}}同住一栋公寓。' },
+  { comment: '主角人设（DLC·大学）', enabled: true, content: '[MAIN·周言·演化后]\n- 法学院学生，戴金丝边眼镜。\n\n[MAIN·{{user}}·演化后]\n- 新闻与传播学院学生，住校内宿舍。\n\n## III. 时代锚点事件\n- 第一次送别。\n\n# IV. 叙事指导\n- 这段不该进手机提示词。' },
+  { comment: '世界设定杂项', enabled: true, content: '[NPC·外校生]\n性别: 女。\n身份: 来打友谊赛的。' },
+  { comment: 'NPC（DLC·成人-破镜重圆）', enabled: true, content: '# I. 核心配角独立档案\n林溪、陆飞从高中时代起，与周言、沈锡元、{{user}}成为好友，关系密切，共同构筑了一个五人的核心小团体。\n\n[NPC·林溪]\n性别: 女。\n身份: 设计师（破镜重圆线）。\n\n[NPC·陆飞]\n性别: 男。\n身份: 运动康复师（破镜重圆线）。\n\n# II. 其他NPC档案\n\n[NPC·许嘉文]\n性别: 男。\n身份: 双面人（破镜重圆线）。' },
+  { comment: '主角人设（DLC·成人-同路而行）', enabled: true, content: '# II. 角色演化档案\n\n[MAIN·周言·演化后]\n- 已婚设定（同路线）。\n\n[MAIN·{{user}}·演化后]\n- 与周言同居（同路线）。' },
+  { comment: 'DLC扩展：大学篇', enabled: true, content: '本模块为大学阶段扩展资料库。\n\n---\n\n一、 既往因果\n- 大一时两人曾因误会冷战半年。\n\n二、 周言·角色叠加演化档案\n1. 身份变化：法学院学生，住校内宿舍。' },
+  { comment: '东海往事::人设::林溪', enabled: true, content: '林溪的手机专用档案' },
+  { comment: '角色档案：周霓', enabled: true, content: '[角色档案：周霓]\n\n## 1. 基础信息\n- 姓名：周霓\n- 明艳张扬\n\n---' },
+  { comment: '角色档案：郑书宁', enabled: true, content: '[角色档案：郑书宁]\n\n## 1. 基础信息\n- 姓名：郑书宁\n- 端正自律' },
+  { comment: '角色档案：NPCs', enabled: true, content: '[角色档案：NPCs]\n\n## 一、 核心功能性角色\n\n### 1. 陈茵（周霓闺蜜）\n\n- 大大咧咧\n\n---\n\n### 2. 张巡（核心室友）\n\n- 糙汉直男\n\n## 二、 宿舍其他角色\n\n### 1. 赵子昂：\n\n- 温和懒散\n\n### 2. 刘青\n\n- 二次元宅男' },
+  { comment: '东海往事::NSFW', enabled: true, content: '[亲密场合叙事风格指引]\n当故事步入私密、暧昧、亲密的场景时，情欲描写以克制与留白为先。' }
+];
+(async () => {
+  const wb = await LW.Worldbook.load();
+  // 主动消息捕捉用例依赖世界线定位后的通讯录白名单；沙盒无 DOM，先架空 UI 再切线
+  LW.Apps.wechat.inject = function () {}; LW.Apps.wechat.render = function () {}; LW.Apps.wechat.remove = function () {};
+  LW.Engine.applyLine('DLC·高中', '测试归位');
+  const g0 = (wb.rosters['DLC·高中'].groups || [])[0] || {};
+  eq('群avatar透传', g0.avatar, 'g.png');
+  eq('群style透传', g0.style, '节奏快');
+  eq('群crowd透传', g0.crowd, '超百人，多为陌生人');
+  eq('群open透传', g0.open, true);
+  eq('群members透传', JSON.stringify(g0.members), '["周言","陆飞","外校生"]');
+  eq('群members滤掉user宏', g0.members.indexOf('{{user}}') === -1, true);
+  eq('联系人avatar透传', (wb.rosters['DLC·高中'].contacts || [])[0].avatar, 'a.png');
+  eq('短标题条目兜底档案', wb.profiles['周言'], '周言的单人条目内容（短标题兜底）');
+  eq('人设条目优先于块', wb.profiles['林溪'], '林溪的手机专用档案');
+  // 线作用域条目：只进线库，不再进全局池（防两条线共用一版档案）
+  const rawNpcGz = (wb.npcLineRaw.filter(r => r.scope === 'DLC·高中-核心人员')[0] || { blocks: {} }).blocks;
+  const rawNpcDx = (wb.npcLineRaw.filter(r => r.scope === 'DLC·大学')[0] || { blocks: {} }).blocks;
+  eq('线NPC库raw·高中陆飞', (rawNpcGz['陆飞'] || '').indexOf('高中版') !== -1, true);
+  // 条目前缀说明块（[NPC设定与时空演化规则]）：块头无「·」不匹配 NPC 正则，不应误建档案键
+  eq('前缀块·不误建NPC键', ('NPC设定与时空演化规则' in rawNpcGz) === false && ('陆飞' in rawNpcGz) === true, true);
+  // 首个 [NPC·] 块之前的说明文字不归属任何档案体——不污染陆飞的档案
+  eq('前缀块·不污染首个档案', (rawNpcGz['陆飞'] || '').indexOf('初始基线') === -1 && (rawNpcGz['陆飞'] || '').indexOf('时空演化') === -1, true);
+  eq('线NPC库raw·不串块', (rawNpcGz['陆飞'] || '').indexOf('班主任') === -1, true);
+  eq('线NPC库raw·大学陆飞', (rawNpcDx['陆飞'] || '').indexOf('大学版') !== -1, true);
+  // 章节头边界（# I. xxx 不把下一章块吞进档案体）：原始块层断言，与线是否配置无关
+  const rawNpcCr = (wb.npcLineRaw.filter(r => r.scope === 'DLC·成人-破镜重圆')[0] || { blocks: {} }).blocks;
+  eq('线NPC库raw·章节头不吞块', (rawNpcCr['林溪'] || '').indexOf('其他NPC档案') === -1, true);
+  eq('作用域条目不进全局池', wb.profiles['陆飞'], '');
+  eq('未作用域条目全局池仍生效', (wb.profiles['外校生'] || '').indexOf('友谊赛') !== -1, true);
+  // 东海卡组「角色档案：X」条目：单人全档剥头行/尾分隔线；NPCs 合集按「### 数字. 名字（说明）：」拆小节
+  eq('角色档案·单人全文', (wb.profiles['周霓'] || '').indexOf('明艳张扬') !== -1, true);
+  eq('角色档案·剥头行标记', (wb.profiles['周霓'] || '').indexOf('[角色档案') === -1, true);
+  eq('角色档案·剥尾分隔线', (wb.profiles['周霓'] || '').indexOf('---') === -1, true);
+  eq('角色档案·NPCs拆陈茵', (wb.profiles['陈茵'] || '').indexOf('大大咧咧') !== -1, true);
+  eq('角色档案·NPCs拆张巡', (wb.profiles['张巡'] || '').indexOf('糙汉直男') !== -1, true);
+  eq('角色档案·NPCs拆赵子昂', (wb.profiles['赵子昂'] || '').indexOf('温和懒散') !== -1, true);
+  eq('角色档案·章节头不混档', (wb.profiles['陈茵'] || '').indexOf('宿舍其他角色') === -1, true);
+  eq('角色档案·小节尾线剥离', (wb.profiles['陈茵'] || '').indexOf('---') === -1, true);
+  eq('角色档案·合集不覆盖单人档', (wb.profiles['周霓'] || '').indexOf('明艳张扬') !== -1 && (wb.profiles['周霓'] || '').indexOf('大大咧咧') === -1, true);
+  const rawEvol = (wb.evolLineRaw.filter(r => r.scope === 'DLC·大学')[0] || { blocks: {} }).blocks;
+  eq('演化块·剥演化后缀', (rawEvol['周言'] || '').indexOf('法学院') !== -1, true);
+  eq('演化块·user块单列', (rawEvol['{{user}}'] || '').indexOf('新闻与传播学院') !== -1, true);
+  eq('末块不吞后续章节', (rawEvol['{{user}}'] || '').indexOf('叙事指导') === -1
+    && (rawEvol['{{user}}'] || '').indexOf('时代锚点事件') === -1, true);
+
+  // ── 8.5 引擎线作用域：拼装、串线隔离、user 宏替换 ──
+  console.log('[引擎·线档案]');
+  var realAppsBak = LW.Apps;   // 8.5 起 Apps 换最小桩躲 DOM；通话交互测试处凭此引用换回真身
+  LW.Apps = { wechat: { inject() {}, render() {}, remove() {} } };
+  LW.Engine.userName = () => '陈默';
+  ctx.getPersona = undefined;   // 模拟旧版酒馆助手：无 getPersona，走父页 powerUserSettings
+  ctx.window.parent = { SillyTavern: { getContext: () => ({
+    name1: '陈默',
+    powerUserSettings: { persona_description: 'persona描述：陈默，住天禧城3幢901。' },
+  }) } };
+  await LW.Engine.load();
+  // 单线配置（东海 v1）：lineOfScope 只认 LINES 里配置的线——未配置线的作用域条目安全失效
+  // （load 时告警跳过，不注入任何档案/演化），将来开世界线在 LINES 注册线名即恢复生效
+  eq('作用域→线名·高中带尾（未配置线认不出）', LW.Engine.lineOfScope('DLC·高中-核心人员'), null);
+  eq('作用域→线名·大学', LW.Engine.lineOfScope('DLC·大学'), 'DLC·大学');
+  eq('作用域→线名·成人带尾（未配置线认不出）', LW.Engine.lineOfScope('DLC·成人-破镜重圆'), null);
+  eq('作用域→线名·成人省略线字（未配置线认不出）', LW.Engine.lineOfScope('DLC·成人'), null);
+  eq('作用域→线名·古代', LW.Engine.lineOfScope('古代线'), null);
+  eq('作用域→线名·认不出', LW.Engine.lineOfScope('未来线'), null);
+  // 未配置线上定位：线专属档案/演化一律不注入，回落基础档（防串线的单线版安全语义）
+  LW.Engine.applyLine('DLC·成人', '测试');
+  eq('未配置线·林溪回落基础档', LW.Engine.profileFor('林溪').indexOf('手机专用档案') !== -1, true);
+  eq('未配置线·线专属档不注入', LW.Engine.profileFor('林溪').indexOf('设计师（破镜重圆线）') === -1, true);
+  eq('未配置线·陆飞无线专属档', LW.Engine.profileFor('陆飞').indexOf('运动康复师（破镜重圆线）') === -1, true);
+  eq('未配置线·user演化不注入', LW.Engine.userBlock().indexOf('与周言同居') === -1, true);
+  eq('未配置线·主角演化不注入', LW.Engine.profileFor('周言').indexOf('已婚设定') === -1, true);
+  // DLC 非档案段落（模块前言/既往因果等）保留为线背景：丢掉的段落 NPC 对既往一无所知
+  const dlcXj = (wb.dlcLineRaw.filter(r => r.parsed && (r.parsed.lore || '').indexOf('冷战半年') !== -1)[0] || { parsed: {} }).parsed;
+  eq('DLC·既往因果段落保留', (dlcXj.lore || '').indexOf('冷战半年') !== -1, true);
+  eq('DLC·模块前言保留', (dlcXj.lore || '').indexOf('大学阶段扩展资料库') !== -1, true);
+  eq('DLC·演化档案仍提取不受lore影响', (dlcXj.main || '').indexOf('法学院学生') !== -1, true);
+  eq('DLC·lore不含分隔线', (dlcXj.lore || '').indexOf('---') === -1, true);
+  LW.Engine.applyLine('DLC·大学', '测试');
+  eq('大学线背景入state', LW.Engine.lineLore().indexOf('冷战半年') !== -1, true);
+  const loreReq = LW.Prompt.private({ name: '周言', profile: '' }, [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, null, [], '', '', '【测试背景】两人是大学室友。');
+  eq('私聊·线背景段', loreReq.ordered_prompts[0].content.indexOf('【测试背景】') !== -1, true);
+  const loreInv = LW.Prompt.callInvite({ name: '沈锡元', profile: '' }, [], null, '', 'audio', [], [], '【测试背景】');
+  eq('通话邀请·线背景段', loreInv.ordered_prompts[0].content.indexOf('【测试背景】') !== -1, true);
+  const loreTurn = LW.Prompt.callTurn({ name: '沈锡元', profile: '' }, '', [], null, '', 'audio', [], '', [], '【测试背景】');
+  eq('通话轮·线背景段', loreTurn.ordered_prompts[0].content.indexOf('【测试背景】') !== -1, true);
+  // FICTION 标题不重复：构建器不再自带独立标题行（旧版数组首行 + FICTION 内部标题 = 出现两遍）
+  const ficTxt = loreTurn.ordered_prompts[0].content;
+  eq('FICTION·标题只出现一次', ficTxt.indexOf('# Narrative Sandbox') === ficTxt.lastIndexOf('# Narrative Sandbox'), true);
+  // 关系盲区回归：通话对象不在场（状态栏无其小块）、关系只在关系总览时，snapshot 必须退回总览取关系——
+  // 否则"关系基调后置"在真实通话场景静默失效（用户实测发现）
+  global.__msgs = [{ role: 'assistant', message: '<status>\n<环境>\n2034年8月26日 星期五|22:49|天禧城3幢901室|阴\n</环境>\n\n<关系总览>\n蒋默：前资助对象/地下情人\n</关系总览>\n</status>' }];
+  const ovSnap = LW.Status.snapshot('蒋默');
+  eq('关系总览·无小块也取到关系', ovSnap.npc && ovSnap.npc.relation, '前资助对象/地下情人');
+  const greqRel = LW.Prompt.group({ name: '高三（2）班', open: false }, [{ name: '蒋默', profile: '测试档案' }], [], null);
+  eq('群聊·总览关系挂名', greqRel.ordered_prompts[0].content.indexOf('蒋默（与机主：前资助对象/地下情人）') !== -1, true);
+  // 卡的 NSFW 文风条目（世界书「东海往事::NSFW」）：口味层由卡维护，注入所有叙事类生成、位置靠后
+  eq('NSFW·条目读取', LW.Engine.nsfwText().indexOf('克制与留白') !== -1, true);
+  const nsfwReq = LW.Prompt.private({ name: '周言', profile: '' }, [], null, [], null, null, null, null, [], '', '', '');
+  const nsfwTxt = nsfwReq.ordered_prompts[0].content;
+  eq('NSFW·注入私聊且在输出要求后', nsfwTxt.indexOf('[亲密场合叙事风格指引]') > nsfwTxt.indexOf('## 输出要求'), true);
+  const nsfwTurn = LW.Prompt.callTurn({ name: '沈锡元', profile: '' }, '', [], null, '', 'video', [], '', [], '');
+  eq('NSFW·注入通话轮', nsfwTurn.ordered_prompts[0].content.indexOf('[亲密场合叙事风格指引]') !== -1, true);
+  global.__msgs = [{ role: 'assistant', message: statusText }];
+  LW.Engine.applyLine('DLC·高中', '测试归位');
+  LW.Engine.applyLine('DLC·高中', '测试');
+  eq('未配置线·高中陆飞无线专属档', LW.Engine.profileFor('陆飞').indexOf('高中版') === -1, true);
+  LW.Engine.applyLine('DLC·大学', '测试');
+  eq('大学线陆飞读大学版·串线隔离', LW.Engine.profileFor('陆飞').indexOf('高中版') === -1 && LW.Engine.profileFor('陆飞').indexOf('大学版') !== -1, true);
+  eq('大学线user宏替换', LW.Engine.profileFor('陆飞').indexOf('{{user}}') === -1 && LW.Engine.profileFor('陆飞').indexOf('陈默') !== -1, true);
+  const zy = LW.Engine.profileFor('周言');
+  eq('基础人设+演化层叠加', zy.indexOf('短标题兜底') !== -1 && zy.indexOf('法学院') !== -1, true);
+  eq('演化层衔接句', zy.indexOf('最新人设演化如下') !== -1 && zy.indexOf('【DLC·大学】') !== -1, true);
+  eq('用户段·persona描述', LW.Engine.userBlock().indexOf('天禧城3幢901') !== -1, true);
+  eq('用户段·衔接句', LW.Engine.userBlock().indexOf('叠加于上方机主资料') !== -1, true);
+  eq('用户段·线user演化', LW.Engine.userBlock().indexOf('新闻与传播学院') !== -1, true);
+  eq('用户段·user宏替换', LW.Engine.userBlock().indexOf('{{user}}') === -1, true);
+
+  // ── 8.6 跨会话上下文：群→私聊 / 私聊→群，当天门控 ──
+  console.log('[跨会话上下文]');
+  LW.Store.push('group:霖附吃瓜二手交易市场', [
+    { who: 'user', kind: 'text', text: '群里水的消息', day: '2034年8月26日 星期五', time: '23:00' },
+    { who: '周言', kind: 'text', text: '哈哈+1', day: '2034年8月26日 星期五', time: '23:01' },
+  ], 100);
+  LW.Store.push('陆飞', [
+    { who: 'user', kind: 'text', text: '晚安，睡了', day: '2034年8月26日 星期五', time: '23:30' },
+  ], 100);
+  LW.Engine.applyLine('DLC·高中', '测试');
+  const cg = LW.Engine.crossGroups('陆飞', '2034年8月26日 星期五');
+  eq('跨群·命中群数', cg.length, 1);
+  eq('跨群·群名', cg[0].name, '霖附吃瓜二手交易市场');
+  eq('跨群·尾巴条数', cg[0].hist.length, 2);
+  eq('跨群·非成员不命中', LW.Engine.crossGroups('张裕民', '2034年8月26日 星期五').length, 0);
+  eq('跨群·跨天不携带', LW.Engine.crossGroups('陆飞', '2034年8月27日 星期六').length, 0);
+  const cp = LW.Engine.crossPrivates(['陆飞', '周言'], '2034年8月26日 星期五');
+  eq('跨私聊·命中', (cp['陆飞'] || []).length, 1);
+  eq('跨私聊·无记录成员跳过', '周言' in cp, false);
+  eq('跨私聊·跨天不携带', Object.keys(LW.Engine.crossPrivates(['陆飞'], '2034年8月27日 星期六')).length, 0);
+  const reqX = LW.Prompt.private({ name: '陆飞', profile: '大学版档案' }, [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, cg);
+  eq('私聊提示词·带群近况节', reqX.ordered_prompts[0].content.indexOf('相关群聊近况') !== -1, true);
+  eq('私聊提示词·群内容进入', reqX.ordered_prompts[0].content.indexOf('哈哈+1') !== -1, true);
+  const gtxtX = LW.Prompt.group({ name: '霖附吃瓜二手交易市场', open: false }, [{ name: '陆飞', profile: '大学版档案' }], [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, cp).ordered_prompts[0].content;
+  eq('群提示词·scoped情报', gtxtX.indexOf('※ 仅 陆飞 本人知晓') !== -1, true);
+  eq('群提示词·私聊内容进入', gtxtX.indexOf('晚安，睡了') !== -1, true);
+  eq('群提示词·防泄漏规则', gtxtX.indexOf('引用一字即出戏') !== -1, true);
+
+  // ── 8.7 主动消息捕捉：<!--phone--> 注释块 ──
+  console.log('[主动消息捕捉]');
+  global.__msgs = [
+    { message_id: 101, role: 'assistant', swipe_id: 0, message: '正文内容<!--phone\n沈锡元：[语音:早点睡]\n沈锡元：在？\n沈锡元：又来一条\n-->可见尾巴' },
+    { message_id: 102, role: 'user', message: '普通 user 消息' },
+  ];
+  LW.Engine.sweepPhoneBlocks(5);
+  const capHist = LW.Store.history('沈锡元');
+  eq('捕捉·带范围参数', global.__lastRange, '0-{{lastMessageId}}');
+  eq('捕捉·写入联系人记录', capHist.length, 3);
+  eq('捕捉·语音契约解析', capHist[0].kind, 'voice');
+  eq('捕捉·文字行解析', capHist[1].text, '在？');
+  eq('捕捉·id登记', LW.Store.procIds().some(function (k) { return k.indexOf('101:') === 0; }), true);
+  // 同层同 swipe 同内容 → 不重复捕捉（楼层:swipe:内容哈希 三要素查重）
+  LW.Engine.sweepPhoneBlocks(5);
+  eq('捕捉·防重不二次写入', LW.Store.history('沈锡元').length, 3);
+  // 重roll = 同层换 swipe → 重新捕捉（删记录后重roll的场景）
+  global.__msgs[0].swipe_id = 1;
+  LW.Engine.sweepPhoneBlocks(5);
+  eq('捕捉·换swipe重新捕捉', LW.Store.history('沈锡元').length, 6);
+  eq('捕捉·重roll内容正确', LW.Store.history('沈锡元')[5].text, '又来一条');
+  // 未读：捕捉落入未打开的会话 → 记红点，重复扫不重复累加；打开即清零
+  const capUn1 = LW.Store.meta('沈锡元').unread || 0;
+  LW.Engine.sweepPhoneBlocks(5);
+  eq('未读·不重复累加', (LW.Store.meta('沈锡元').unread || 0) === capUn1, true);
+  eq('未读·已有计数', capUn1 > 0, true);
+  LW.Store.clearUnread('沈锡元');
+  eq('未读·打开清零', LW.Store.meta('沈锡元').unread, 0);
+  // ── 8.8 通话：提示词构造 + 群夹带私聊路由 + sys 条目 ──
+  console.log('[通话]');
+  const invHist = [{ who: 'user', kind: 'text', text: '晚安，睡了', day: '2034年8月26日 星期五', time: '23:01' }];
+  const inv = LW.Prompt.callInvite({ name: '沈锡元', profile: '测试档案' }, invHist, { dateText: '2034年8月26日 星期五', npc: { relation: '竹马' } }, '机主资料', 'audio', []);
+  const invTxt = inv.ordered_prompts[0].content;
+  eq('通话·邀请任务', invTxt.indexOf('语音通话') !== -1, true);
+  eq('通话·拒绝约定', invTxt.indexOf('[拒绝]') !== -1, true);
+  eq('通话·接听约定', invTxt.indexOf('[接听]') !== -1, true);
+  // 视频邀请单独要求 [画面] 行（与台词交织，不只开头）
+  const invV = LW.Prompt.callInvite({ name: '沈锡元', profile: '测试档案' }, invHist, { dateText: '2034年8月26日 星期五', npc: { relation: '竹马' } }, '机主资料', 'video', []);
+  const invVTxt = invV.ordered_prompts[0].content;
+  eq('通话·视频邀请任务', invVTxt.indexOf('视频通话') !== -1, true);
+  eq('通话·视频邀请画面约定', invVTxt.indexOf('[画面]') !== -1, true);
+  eq('通话·视频邀请画面穿插', invVTxt.indexOf('穿插') !== -1, true);
+  eq('通话·语音邀请无画面约定', invTxt.indexOf('[画面]') === -1, true);
+  // 通话记忆跟随灰泡：记录里没有通话泡 → 不带；有 → 注入对应通话段（纪要或原文）
+  eq('通话·邀请无灰泡不带通话记忆', invTxt.indexOf('## 通话记忆') === -1, true);
+  const invR = LW.Prompt.callInvite({ name: '沈锡元', profile: '测试档案' }, invHist, { dateText: '2034年8月26日 星期五', npc: { relation: '竹马' } }, '机主资料', 'audio', [],
+    [{ head: '语音通话 · 02:10（今天）', text: '两人刚谈到一半的话题与约定。' }]);
+  eq('通话·邀请带灰泡对应的通话记忆', invR.ordered_prompts[0].content.indexOf('刚谈到一半的话题') !== -1, true);
+  eq('通话·邀请带主线近况', invTxt.indexOf('## 主线近况') !== -1, true);
+  eq('通话·邀请带最近私聊', invTxt.indexOf('晚安，睡了') !== -1, true);
+  const turn = LW.Prompt.callTurn({ name: '沈锡元', profile: '测试档案' }, '沈锡元：喂\n裴知意：嗯', invHist, { dateText: '2034年8月26日 星期五' }, '机主资料', 'video', [], '你睡了吗');
+  const turnTxt = turn.ordered_prompts[0].content;
+  eq('通话·轮任务', turnTxt.indexOf('视频通话') !== -1, true);
+  eq('通话·transcript带入', turnTxt.indexOf('沈锡元：喂') !== -1, true);
+  eq('通话·轮带主线近况', turnTxt.indexOf('## 主线近况') !== -1, true);
+  eq('通话·轮带近期私聊', turnTxt.indexOf('## 近期私聊记录') !== -1, true);
+  eq('通话·机主话入user轮', turn.ordered_prompts[1].content.indexOf('你睡了吗') !== -1, true);
+  // 视频轮次同样要 [画面] 行且要求穿插；splitCallOutput 保序拆分画面与台词
+  eq('通话·视频轮画面约定', turnTxt.indexOf('[画面]') !== -1, true);
+  eq('通话·视频轮画面穿插', turnTxt.indexOf('穿插') !== -1, true);
+  const sp = LW.Engine.splitCallOutput('[画面] 他揉了揉眼睛，凑近屏幕\n喂\n[画面] 他笑着摆了摆手\n明天见');
+  eq('通话·拆分保序数', sp.length, 4);
+  eq('通话·拆分首条画面', sp[0].kind, 'scene');
+  eq('通话·拆分画面内容', sp[0].text.indexOf('揉了揉眼睛') !== -1, true);
+  eq('通话·拆分台词在画面后', sp[1].kind + ':' + sp[1].text, 'line:喂');
+  eq('通话·拆分画面穿插中间', sp[2].kind, 'scene');
+  eq('通话·拆分结尾台词', sp[3].text, '明天见');
+  // 旧格式兼容：[画面] 行后未写完的续行收到 --- 为止
+  const sp2 = LW.Engine.splitCallOutput('[画面]\n他凑近屏幕，眨了眨眼\n---\n喂，听得到吗');
+  eq('通话·旧格式画面合块', sp2[0].kind, 'scene');
+  eq('通话·旧格式画面内容', sp2[0].text.indexOf('眨了眨眼') !== -1, true);
+  eq('通话·旧格式台词保留', sp2[1].text, '喂，听得到吗');
+  // 通话记录灰泡：楼层存档与列表页预览统一压成 [语音通话]/[视频通话]
+  eq('通话·记录行格式音频', LW.Floor.msgToLine({ who: 'user', kind: 'calllog', mode: 'audio', text: '通话时长 00:09' }, '裴知意'), '裴知意：[语音通话 · 00:09]');
+  eq('通话·记录行格式视频', LW.Floor.msgToLine({ who: 'user', kind: 'calllog', mode: 'video', text: '对方已拒绝' }, '裴知意'), '裴知意：[视频通话 · 对方已拒绝]');
+  // ── 8.9 朋友圈：契约解析 + 提示词装配 + 互动痕迹 ──
+  console.log('[朋友圈]');
+  const mposts = LW.Engine.parseMoments('[动态:周言:月考成绩出了，还活着]\n[配图:周言:公告栏前挤满人的成绩单]\n[点赞:林溪、陆飞]\n[评论:陆飞@周言:年级第七请客]\n[动态:林溪:救命 数学最后一道大题是什么鬼]\n这是游离行不要');
+  eq('朋友圈·动态条数', mposts.length, 2);
+  eq('朋友圈·动态作者', mposts[0].who, '周言');
+  eq('朋友圈·配图挂上', mposts[0].img.indexOf('成绩单') !== -1, true);
+  eq('朋友圈·无图动态', mposts[1].img, '');
+  eq('朋友圈·游离行丢弃', mposts.some(x => x.text.indexOf('游离') !== -1), false);
+  eq('朋友圈·点赞挂上', mposts[0].likes.join('、'), '林溪、陆飞');
+  eq('朋友圈·生成期评论挂上', mposts[0].comments.length, 1);
+  eq('朋友圈·生成期评论指向作者', mposts[0].comments[0].replyTo, '周言');
+  eq('朋友圈·无互动动态空表', mposts[1].likes.length + mposts[1].comments.length, 0);
+  // 发布时间行：挂在紧跟的那条动态下（动态自身时间，由 AI 生成）
+  const mpostsT = LW.Engine.parseMoments('[动态:周言:第一条]\n[时间:8月26日 21:05]\n[动态:林溪:第二条没写时间]');
+  eq('朋友圈·时间行挂上', mpostsT[0].ptRaw, '8月26日 21:05');
+  eq('朋友圈·没时间行留空', mpostsT[1].ptRaw == null, true);
+  // @回复评论者：挂在紧跟的那条动态下，不回溯到被回复者自己的动态（曾错挂）
+  const mposts2 = LW.Engine.parseMoments('[动态:沈锡元:有些人这消失的功夫真是见长]\n[评论:林溪:笑死，被谁家闭门羹喂饱了]\n[评论:沈锡元@林溪:滚蛋]\n[动态:林溪:糖水铺快乐老家]\n[评论:周言:哈哈哈]');
+  eq('朋友圈·回复挂跟随动态', mposts2[0].comments.length, 2);
+  eq('朋友圈·回复指向评论者', mposts2[0].comments[1].replyTo, '林溪');
+  eq('朋友圈·后续评论挂新动态', mposts2[1].comments.length, 1);
+  const mreps = LW.Engine.parseMomentsReplies('[评论:周言@陈默:就你话多]\n[评论:林溪:哈哈哈哈]');
+  eq('朋友圈·接话条数', mreps.length, 2);
+  eq('朋友圈·接话回复指向', mreps[0].replyTo, '陈默');
+  eq('朋友圈·接话无指向', mreps[1].replyTo, '');
+  const mf = LW.Prompt.momentsFill([{ name: '周言', profile: '班长档案' }, { name: '林溪', profile: '闺蜜档案' }],
+    { dateText: '2034年8月26日 星期五', time: '22:49' }, '机主资料');
+  const mfTxt = mf.ordered_prompts[0].content;
+  eq('朋友圈·填充任务', mfTxt.indexOf('朋友圈') !== -1, true);
+  eq('朋友圈·填充带档案', mfTxt.indexOf('班长档案') !== -1, true);
+  eq('朋友圈·动态契约', mfTxt.indexOf('[动态:名字:动态文字]') !== -1, true);
+  eq('朋友圈·时间契约', mfTxt.indexOf('[时间:M月D日 HH:MM]') !== -1, true);
+  eq('朋友圈·时间不晚于当前', mfTxt.indexOf('不得晚于当前时刻') !== -1, true);
+  eq('朋友圈·配图契约', mfTxt.indexOf('[配图:名字:画面描述]') !== -1, true);
+  eq('朋友圈·点赞契约', mfTxt.indexOf('[点赞:点赞者1、点赞者2、点赞者3]') !== -1, true);
+  eq('朋友圈·生成期评论契约', mfTxt.indexOf('[评论:评论者@被回复的人:') !== -1, true);
+  eq('朋友圈·不刻意emoji', mfTxt.indexOf('不要刻意凑 emoji') !== -1, true);
+  eq('朋友圈·不为发动态而发动态', mfTxt.indexOf('为了发动态而发动态') !== -1, true);
+  eq('朋友圈·静默生成', mf.should_silence, true);
+  const mr = LW.Prompt.momentsReply({ who: '周言', text: '月考出分了', img: '成绩单' },
+    [{ who: '林溪', replyTo: '', text: '牛啊' }], '请客吗', [{ name: '周言', profile: '班长' }, { name: '林溪', profile: '闺蜜' }],
+    { dateText: '2034年8月26日 星期五' }, '机主资料');
+  const mrTxt = mr.ordered_prompts[0].content;
+  eq('朋友圈·回复带动态', mrTxt.indexOf('月考出分了') !== -1, true);
+  eq('朋友圈·回复带机主评论', mrTxt.indexOf('请客吗') !== -1, true);
+  eq('朋友圈·评论契约', mrTxt.indexOf('[评论:名字:评论内容]') !== -1, true);
+  eq('朋友圈·回复指向契约', mrTxt.indexOf('@') !== -1, true);
+  const reqMN = LW.Prompt.private({ name: '周言', profile: '' }, [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, null, null,
+    '机主在动态「月考成绩出了」下评论「请客吗」');
+  eq('朋友圈·互动痕迹段', reqMN.ordered_prompts[0].content.indexOf('## 近期朋友圈（近3天') !== -1, true);
+  eq('朋友圈·互动痕迹内容', reqMN.ordered_prompts[0].content.indexOf('请客吗') !== -1, true);
+  // 带日期：AI 写 [时间:] 的归一化、晚于快照时刻的被驳回走兜底、兜底不越过「现在」
+  global.__msgs = [{ role: 'assistant', message: statusText }];
+  ctx.generateRaw = async (req) => '[动态:周言:带时间的动态]\n[时间:8月26日 21:05]\n[动态:林溪:没写时间的动态]\n[动态:陆飞:写了个未来时间]\n[时间:8月26日 23:59]';
+  eq('朋友圈·带日期生成', await LW.Engine.momentsEnsure(), true);
+  const mfd = LW.Engine.momentsFeed();
+  eq('朋友圈·AI时间归一化', mfd.some(function (e) { return e.pt === '2034年8月26日 21:05'; }), true);
+  eq('朋友圈·未来时间被驳回', mfd.every(function (e) { return e.pt !== '2034年8月26日 23:59'; }), true);
+  eq('朋友圈·缺省时间兜底', mfd.every(function (e) { return /^\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}$/.test(e.pt); }), true);
+  eq('朋友圈·时间不越过快照', mfd.filter(function (e) { return e.pt.indexOf('8月26日') !== -1; }).every(function (e) { return e.pt.slice(-5) <= '22:49'; }), true);
+  // 存量回补：时间体系前的旧动态没有 pt，打开朋友圈时按序补一个不超过快照时刻的时间
+  //（放在 filledDay 早退之前，旧数据只此一次 healing 机会）
+  LW.Store.push(LW.Engine.momentsKey, [{ who: '周言', text: '旧数据动态', img: '', pt: '', label: '昨天 10:28', likes: [], comments: [] }], 100);
+  eq('朋友圈·当日已生成不重复', await LW.Engine.momentsEnsure(), false);
+  const legacyE = LW.Engine.momentsFeed().filter(function (e) { return e.text === '旧数据动态'; })[0];
+  eq('朋友圈·旧数据回补时间', legacyE && /^\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}$/.test(legacyE.pt), true);
+  eq('朋友圈·回补不越过快照', legacyE.pt.indexOf('8月26日') !== -1 && legacyE.pt.slice(-5) <= '22:49', true);
+  // 互动旧动态进摘要：评论一条 5 天前的动态，摘要不能因为超窗丢掉（互动是刚发生的，对方记得）
+  LW.Store.push(LW.Engine.momentsKey, [{ who: '林溪', text: '五天前的旧动态', img: '', pt: '2034年8月21日 20:00', label: '', likes: [], comments: [{ who: '陈默', replyTo: '', text: '火锅走起' }] }], 100);
+  const noteOld = LW.Engine.momentsNoteFor('林溪', { dateText: '2034年8月26日 星期五' });
+  eq('朋友圈·互动旧动态进摘要', noteOld.indexOf('火锅走起') !== -1, true);
+  eq('朋友圈·互动旧动态标注刚发生', noteOld.indexOf('刚评论') !== -1 && noteOld.indexOf('互动是刚发生的') !== -1, true);
+  eq('朋友圈·近3天动态仍进摘要', noteOld.indexOf('没写时间的动态') !== -1, true);
+  // 无日期兜底：状态栏解析不到日期也能生成一次（修复曾静默 return false、前端永远空态的 bug）
+  while (LW.Engine.momentsFeed().length) LW.Store.popLast(LW.Engine.momentsKey, 1);   // 清空上一段带日期的 3 条
+  global.__msgs = [{ role: 'assistant', message: '没有任何状态栏块的普通楼层' }];
+  ctx.generateRaw = async (req) => '[动态:周言:无日期也能正常发动态]\n[动态:林溪:第二条兜底]';
+  eq('朋友圈·无日期兜底生成', await LW.Engine.momentsEnsure(), true);
+  eq('朋友圈·哨兵打卡', LW.Store.meta(LW.Engine.momentsKey).filledDay, '__nodate__');
+  eq('朋友圈·兜底条数', LW.Engine.momentsFeed().length, 2);
+  eq('朋友圈·兜底无伪造时间', LW.Engine.momentsFeed().every(function (e) { return e.pt === '' && e.label === ''; }), true);
+  eq('朋友圈·兜底不重复生成', await LW.Engine.momentsEnsure(), false);
+  // 机主自己发朋友圈：落库即 feed 尾部（最新）、pt 取状态栏当下、空文本拒绝
+  global.__msgs = [{ role: 'assistant', message: statusText }];
+  eq('发圈·空文本拒绝', LW.Engine.momentsPost('   '), -1);
+  const mpIdx0 = LW.Engine.momentsPost('配图测试', '一张拍糊的试卷');
+  eq('发圈·配图文描落库', LW.Engine.momentsFeed()[mpIdx0].img, '一张拍糊的试卷');
+  const mpIdx = LW.Engine.momentsPost('月考终于结束了');
+  eq('发圈·下标即尾部', mpIdx, LW.Engine.momentsFeed().length - 1);
+  const mpE = LW.Engine.momentsFeed()[mpIdx];
+  eq('发圈·作者机主', mpE.who, '陈默');
+  eq('发圈·pt取快照当下', mpE.pt, '2034年8月26日 22:49');
+  // 朋友们反应的解析：赞/评论两种行、去重、剔机主自己、赞封顶 5
+  const reacts = LW.Engine.parseMomentReacts('[赞:林溪]\n[赞:周言]\n[赞:陈默]\n[赞:林溪]\n[评论:陆飞:恭喜脱离苦海]\n[评论:张裕民@陈默:卷子撕了吗]', '陈默');
+  eq('发圈·解析赞去重剔自己', reacts.likes.join('、'), '林溪、周言');
+  eq('发圈·解析评论条数', reacts.comments.length, 2);
+  eq('发圈·一人只许反应一次', reacts.comments.every(function (cm) { return reacts.likes.indexOf(cm.who) === -1; }), true);
+  eq('发圈·评论带回复指向', reacts.comments[1].replyTo, '陈默');
+  const reactsCap = LW.Engine.parseMomentReacts('[赞:林溪]\n[赞:周言]\n[赞:陆飞]\n[赞:张裕民]\n[赞:裴知意]\n[赞:许嘉文]\n[赞:王教练]\n[赞:李叔]\n[赞:赵球迷]\n[赞:孙同学]\n[赞:钱队友]\n[赞:周记者]\n[赞:吴邻居]\n[赞:郑队友]', '陈默');
+  eq('发圈·赞封顶12（热度拉满）', reactsCap.likes.length, 12);
+  // 虚构次要人物（父母/队友/粉丝路人）照常解析——他们只是名字，不进通讯录体系
+  const reactsFic = LW.Engine.parseMomentReacts('[赞:蒋妈妈]\n[赞:王教练]\n[评论:球迷小张:恭喜夺冠！]', '陈默');
+  eq('发圈·虚构路人解析', reactsFic.likes.length === 2 && reactsFic.comments[0].who === '球迷小张', true);
+  // 机主动态摘要：近 3 天机主发的 + 谁互动了，进私聊上下文当话题
+  LW.Store.patchAt(LW.Engine.momentsKey, mpIdx, { likes: ['林溪', '周言'], comments: [{ who: '周言', replyTo: '', text: '恭喜脱离苦海' }] });
+  const myNote = LW.Engine.myMomentsNote({ dateText: '2034年8月26日 星期五' });
+  eq('发圈·机主摘要含动态', myNote.indexOf('月考终于结束了') !== -1, true);
+  eq('发圈·机主摘要含互动', myNote.indexOf('恭喜脱离苦海') !== -1 && myNote.indexOf('林溪 赞了') !== -1, true);
+  const reqMy = LW.Prompt.private({ name: '周言', profile: '' }, [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, null, null, '',
+    '8月26日 21:47 机主发了「月考终于结束了」，林溪 赞了');
+  eq('发圈·私聊带机主朋友圈段', reqMy.ordered_prompts[0].content.indexOf('## 机主发过的朋友圈（近3天）') !== -1, true);
+  eq('发圈·私聊段含内容', reqMy.ordered_prompts[0].content.indexOf('月考终于结束了') !== -1, true);
+  // 机主删自己的动态：只许删自己的；删除后下标移位、摘要不再提它
+  eq('发圈·删别人的动态拒绝', LW.Engine.momentsDelete(0), false);
+  eq('发圈·删超界拒绝', LW.Engine.momentsDelete(999), false);
+  eq('发圈·删除生效', LW.Engine.momentsDelete(mpIdx), true);
+  eq('发圈·删除后尾部移位', LW.Engine.momentsFeed().length - 1, mpIdx0);
+  eq('发圈·摘要不再提已删', LW.Engine.myMomentsNote({ dateText: '2034年8月26日 星期五' }).indexOf('月考终于结束了') === -1, true);
+  eq('发圈·同条校验认人认文', LW.Engine.sameMoment(LW.Engine.momentsKey, mpIdx0, LW.Engine.momentsFeed()[mpIdx0]), true);
+  eq('发圈·同条校验拒越界', LW.Engine.sameMoment(LW.Engine.momentsKey, 999, {}), false);
+  // 转账：聊天记录里的一种消息 kind（无独立账本），双向契约 + 状态翻转
+  eq('转账·上下文行机主发出', LW.Floor.msgToLine({ who: 'user', kind: 'transfer', amount: 50, note: '奶茶钱', to: '周言' }, '陈默'), '陈默：[转账给周言 ¥50（奶茶钱）]（待收款）');
+  eq('转账·上下文行NPC发来', LW.Floor.msgToLine({ who: '周言', kind: 'transfer', amount: 20, note: '', to: '' }, '陈默'), '周言：[周言转账 ¥20]（待收款）');
+  eq('转账·已收款状态尾巴', LW.Floor.msgToLine({ who: 'user', kind: 'transfer', amount: 50, note: '', to: '周言', state: 'accepted' }, '陈默'), '陈默：[转账给周言 ¥50]（对方已收款）');
+  eq('转账·机主已收下状态尾巴', LW.Floor.msgToLine({ who: '周言', kind: 'transfer', amount: 20, note: '', to: '', state: 'accepted' }, '陈默'), '周言：[周言转账 ¥20]（机主已收下）');
+  eq('转账·机主已退还状态尾巴', LW.Floor.msgToLine({ who: '周言', kind: 'transfer', amount: 20, note: '', to: '', state: 'declined' }, '陈默'), '周言：[周言转账 ¥20]（机主已退还）');
+  const tnpc = LW.Floor.parseNpcLines('[转账:50:奶茶钱]', '周言');
+  eq('转账·NPC契约解析', tnpc.length === 1 && tnpc[0].kind === 'transfer' && tnpc[0].amount === 50 && tnpc[0].note === '奶茶钱' && tnpc[0].state === 'waiting', true);
+  // 重roll 回退：本轮已翻账的恢复待收款；更早轮次（前面隔了 NPC 消息）的旧账不动
+  LW.Store.push('回退测试', [
+    { who: 'user', kind: 'transfer', amount: 10, note: '旧账', to: '周言', state: 'waiting' },
+    { who: '周言', kind: 'text', text: '上次的钱我收啦' },
+    { who: 'user', kind: 'transfer', amount: 50, note: '本轮', to: '周言', state: 'waiting' },
+  ], 100);
+  eq('转账·回复成功翻账（批量翻全部待收款）', LW.Engine.markTransfersAccepted('回退测试'), 2);
+  eq('转账·本轮已收款', LW.Store.history('回退测试')[2].state, 'accepted');
+  eq('转账·重roll回退本轮', LW.Engine.rollbackTransfers('回退测试'), 1);
+  eq('转账·回退后待收款', LW.Store.history('回退测试')[2].state, 'waiting');
+  eq('转账·旧账不被动', LW.Store.history('回退测试')[0].state, 'accepted');
+  // 回退后再生成成功会重新翻账
+  eq('转账·重roll后再翻账', LW.Engine.markTransfersAccepted('回退测试'), 1);
+  eq('转账·再翻后已收款', LW.Store.history('回退测试')[2].state, 'accepted');
+  eq('转账·非法金额忽略', LW.Floor.parseNpcLines('[转账:abc]', '周言').length, 0);
+  eq('转账·超限金额忽略', LW.Floor.parseNpcLines('[转账:99999999]', '周言').length, 0);
+  const tseg = LW.Floor.parseNpcLines('拿着 [转账:20] 不用找了', '周言');
+  eq('转账·行内契约拆条', tseg.some(function (m) { return m.kind === 'transfer' && m.amount === 20; }), true);
+  const tk = '转账测试';
+  LW.Store.push(tk, [
+    { who: 'user', kind: 'transfer', amount: 50, note: '', to: '周言', state: 'waiting', time: '' },
+    { who: 'user', kind: 'text', text: '给你转了点钱', time: '' },
+    { who: '周言', kind: 'transfer', amount: 20, note: '找零', to: '', state: 'waiting', time: '' },
+  ], 100);
+  eq('转账·翻卡只动机主发的', LW.Engine.markTransfersAccepted(tk), 1);
+  eq('转账·机主发的已翻', LW.Store.history(tk)[0].state, 'accepted');
+  eq('转账·NPC发的未动', LW.Store.history(tk)[2].state, 'waiting');
+  eq('转账·再翻零条', LW.Engine.markTransfersAccepted(tk), 0);
+  eq('转账·不能收自己发的', LW.Engine.acceptTransfer(tk, 0), false);
+  eq('转账·点收NPC发的', LW.Engine.acceptTransfer(tk, 2), true);
+  eq('转账·重复收款拒绝', LW.Engine.acceptTransfer(tk, 2), false);
+  eq('转账·越界拒绝', LW.Engine.acceptTransfer(tk, 9), false);
+  // 转账处置回执：收下/退还（机主）与拒收（对方）——记录行进上下文，AI 靠行全知情
+  eq('转账·收下上下文行', LW.Floor.msgToLine({ who: 'user', kind: 'taccept', amount: 66, note: '', from: '周言' }, '陈默'), '陈默：[收下了周言的转账 ¥66]');
+  eq('转账·退还上下文行', LW.Floor.msgToLine({ who: 'user', kind: 'tdecline', amount: 66, note: '', from: '周言' }, '陈默'), '陈默：[退还了周言的转账 ¥66]');
+  eq('转账·NPC拒收上下文行', LW.Floor.msgToLine({ who: '周言', kind: 'tdecline', amount: 50, note: '', from: '' }, '陈默'), '周言：[周言拒收了转账 ¥50]');
+  const tdec = LW.Floor.parseNpcLines('[拒收转账:50:这钱不能收]', '周言');
+  eq('转账·NPC拒收契约解析', tdec.length === 1 && tdec[0].kind === 'tdecline' && tdec[0].amount === 50 && tdec[0].note === '这钱不能收', true);
+  eq('转账·拒收非法金额忽略', LW.Floor.parseNpcLines('[拒收转账:abc]', '周言').length, 0);
+  // [接收转账] 契约：带参精确 / 裸标识空参占位 / 非法参数忽略
+  const tacc = LW.Floor.parseNpcLines('[接收转账:50:奶茶钱]', '周言');
+  eq('转账·NPC接收契约解析', tacc.length === 1 && tacc[0].kind === 'taccept' && tacc[0].amount === 50 && tacc[0].note === '奶茶钱', true);
+  const taccB = LW.Floor.parseNpcLines('[接收转账]', '周言');
+  eq('转账·接收裸标识', taccB.length === 1 && taccB[0].kind === 'taccept' && taccB[0].amount === '', true);
+  eq('转账·接收非法金额忽略', LW.Floor.parseNpcLines('[接收转账:abc]', '周言').length, 0);
+  const tdecB = LW.Floor.parseNpcLines('[拒收转账]', '周言');
+  eq('转账·拒收裸标识', tdecB.length === 1 && tdecB[0].kind === 'tdecline' && tdecB[0].amount === '', true);
+  // 裸标识宽松对账：对到该发送方最近一笔待收款，回执金额回填
+  LW.Store.push('宽松对账', [
+    { who: 'user', kind: 'transfer', amount: 10, note: '旧', to: '周言', state: 'waiting' },
+    { who: 'user', kind: 'transfer', amount: 50, note: '新', to: '周言', state: 'waiting' },
+    { who: '周言', kind: 'taccept', amount: '', note: '', from: '', time: '' },
+  ], 100);
+  eq('转账·裸接收对最近一笔', LW.Engine.applyNpcAccepts('宽松对账'), 1);
+  eq('转账·最近一笔已收', LW.Store.history('宽松对账')[1].state, 'accepted');
+  eq('转账·较早一笔仍待收', LW.Store.history('宽松对账')[0].state, 'waiting');
+  eq('转账·回执金额回填', LW.Store.history('宽松对账')[2].amount === 50 && LW.Store.history('宽松对账')[2].note === '新', true);
+  // 拒收同规则：裸 [拒收转账] 对最近待收款翻退还并回填
+  LW.Store.push('宽松对账', [
+    { who: 'user', kind: 'transfer', amount: 10, note: '旧', to: '周言', state: 'waiting' },
+    { who: '周言', kind: 'tdecline', amount: '', note: '', from: '', time: '' },
+  ], 100);
+  eq('转账·裸拒收对最近一笔', LW.Engine.applyNpcDeclines('宽松对账'), 1);
+  eq('转账·裸拒收翻退还', LW.Store.history('宽松对账')[3].state, 'declined');
+  eq('转账·拒收回执回填', LW.Store.history('宽松对账')[4].amount, 10);
+  const tk2 = '转账处置测试';
+  LW.Store.push(tk2, [
+    { who: '周言', kind: 'transfer', amount: 66, note: '红包', to: '', state: 'waiting', time: '' },
+    { who: 'user', kind: 'text', text: '这多不好意思', time: '' },
+    { who: 'user', kind: 'transfer', amount: 50, note: '', to: '周言', state: 'waiting', time: '' },
+  ], 100);
+  eq('转账·机主收下发出即翻', LW.Engine.verdictTransfer(tk2, 'accepted', '周言', 66, '红包'), true);
+  eq('转账·收下后卡已收款', LW.Store.history(tk2)[0].state, 'accepted');
+  eq('转账·已处置不能再翻', LW.Engine.verdictTransfer(tk2, 'declined', '周言', 66, '红包'), false);
+  eq('转账·备注不匹配不翻', LW.Engine.verdictTransfer(tk2, 'accepted', '周言', 66, '错备注'), false);
+  eq('转账·发送方不匹配不翻', LW.Engine.verdictTransfer(tk2, 'declined', '林溪', 50, ''), false);
+  LW.Store.push(tk2, [{ who: '林溪', kind: 'tdecline', amount: 50, note: '', from: '', time: '' }], 100);
+  eq('转账·NPC拒收落地翻退还', LW.Engine.applyNpcDeclines(tk2), 1);
+  eq('转账·机主发的卡已退还', LW.Store.history(tk2)[2].state, 'declined');
+  eq('转账·拒收后回复不再收款', LW.Engine.markTransfersAccepted(tk2), 0);
+  eq('转账·无契约时拒收落地零条', LW.Engine.applyNpcDeclines(tk), 0);
+  const reqT = LW.Prompt.private({ name: '周言', profile: '' }, [], { dateText: '2034年8月26日 星期五' }, [], null, null, null, null, null, '', '');
+  eq('转账·私聊契约说明', reqT.ordered_prompts[0].content.indexOf('[转账:金额:备注]') !== -1, true);
+  eq('转账·私聊接收契约说明', reqT.ordered_prompts[0].content.indexOf('[接收转账:金额:备注]') !== -1, true);
+  eq('转账·私聊拒收契约说明', reqT.ordered_prompts[0].content.indexOf('[拒收转账:金额:备注]') !== -1, true);
+  // 转账/处置记录行进提示词上下文：AI 全知情，不会重复转账（回归：msgBody 缺 case 时空行）
+  const reqTT = LW.Prompt.private({ name: '周言', profile: '' }, [
+    { who: 'user', kind: 'transfer', amount: 50, note: '奶茶钱', to: '周言', state: 'accepted', day: '2034年8月26日 星期五', time: '22:00' },
+    { who: 'user', kind: 'taccept', amount: 66, note: '', from: '周言', day: '2034年8月26日 星期五', time: '22:01' },
+    { who: '周言', kind: 'transfer', amount: 20, note: '', to: '', state: 'waiting', day: '2034年8月26日 星期五', time: '22:02' },
+    { who: '周言', kind: 'tdecline', amount: 30, note: '', from: '', day: '2034年8月26日 星期五', time: '22:03' },
+  ], { dateText: '2034年8月26日 星期五' }, [], null, null, null, null, null, '');
+  const spTT = reqTT.ordered_prompts[0].content;
+  eq('提示词·机主转账已收款行', spTT.indexOf('陈默：[转账给周言 ¥50（奶茶钱）]（对方已收款）') !== -1, true);
+  eq('提示词·机主收下回执行', spTT.indexOf('陈默：[收下了周言的转账 ¥66]') !== -1, true);
+  eq('提示词·NPC转账待收款行', spTT.indexOf('周言：[周言转账 ¥20]（待收款）') !== -1, true);
+  eq('提示词·NPC拒收回执行', spTT.indexOf('周言：[周言拒收了转账 ¥30]') !== -1, true);
+  // 机主朋友圈的回应 prompt：契约行与人数约束
+  const mreact = LW.Prompt.momentsReact({ who: '陈默', text: '月考终于结束了', img: '一张拍糊的试卷', when: '8月26日 22:49' },
+    [{ name: '周言', profile: '班长' }, { name: '林溪', profile: '闺蜜' }],
+    { dateText: '2034年8月26日 星期五' }, '机主资料', '周言：明天球馆别迟到', '群「霖附吃瓜二手交易市场」· 陆飞：哈哈哈');
+  const mreactTxt = mreact.ordered_prompts[0].content;
+  const mreactUser = mreact.ordered_prompts[1].content;
+  eq('发圈·动态在user消息里', mreactUser.indexOf('月考终于结束了') !== -1, true);
+  eq('发圈·user消息带配图', mreactUser.indexOf('配图：一张拍糊的试卷') !== -1, true);
+  eq('发圈·system不埋动态', mreactTxt.indexOf('月考终于结束了') === -1, true);
+  eq('发圈·回应带私聊段', mreactTxt.indexOf('机主今天的私聊') !== -1 && mreactTxt.indexOf('明天球馆别迟到') !== -1, true);
+  eq('发圈·回应带群聊段', mreactTxt.indexOf('机主今天的群聊') !== -1 && mreactTxt.indexOf('哈哈哈') !== -1, true);
+  eq('发圈·赞契约', mreactTxt.indexOf('[赞:名字]') !== -1, true);
+  eq('发圈·评论契约', mreactTxt.indexOf('[评论:名字:评论内容]') !== -1, true);
+  eq('发圈·一人至多一次', mreactTxt.indexOf('一人至多反应一次') !== -1, true);
+  // 群夹带私聊：群回复里的 <!--phone--> 块路由进私聊且从群记录剥掉
+  global.__msgs = null;
+  const sideNames = LW.Engine.capturePhoneText('陆飞：哈哈<!--phone\n许嘉文：我有，直接送你\n-->还有');
+  eq('群夹带·路由到人', sideNames.indexOf('许嘉文') !== -1, true);
+  eq('群夹带·写入私聊', LW.Store.history('许嘉文').some(function (m) { return m.text.indexOf('直接送你') !== -1; }), true);
+  // 错名防护：不在通讯录/写成机主本人的组整组丢弃——不入库、不冒红点（幽灵红点修复）
+  ctx.getVariables().user = '裴知意'; // userName() 的变量兜底，充当机主名
+  const dropNames = LW.Engine.capturePhoneText('<!--phone\n查无此人：在吗\n裴知意：谢谢款待\n许嘉文：东西到了\n-->');
+  eq('错名·未知联系人丢弃', dropNames.indexOf('查无此人') === -1, true);
+  eq('错名·机主本人丢弃', dropNames.indexOf('裴知意') === -1, true);
+  eq('错名·通讯录内不误伤', dropNames.indexOf('许嘉文') !== -1, true);
+  eq('错名·未知联系人不入库', LW.Store.history('查无此人').length, 0);
+  eq('错名·机主不入库', LW.Store.history('裴知意').length, 0);
+  eq('错名·机主不冒红点', LW.Store.meta('裴知意').unread || 0, 0);
+  // 群名行进群聊键（group: 前缀，与 generateFor 群聊同一会话），不再错建成私聊幽灵
+  LW.Engine.capturePhoneText('<!--phone\n霖附吃瓜二手交易市场：球赛定了\n-->');
+  eq('群名·路由进群键', LW.Store.history('group:霖附吃瓜二手交易市场').some(function (m) { return m.text.indexOf('球赛定了') !== -1; }), true);
+  eq('群名·不建私聊幽灵', LW.Store.history('霖附吃瓜二手交易市场').length, 0);
+  delete ctx.getVariables().user;
+  // 通话会话边界（bug：新通话界面/API 请求混入旧详单）+ 重roll 弹净超长回复（旧 10 条上限泄漏旁白）
+  global.__msgs = [{ role: 'assistant', message: statusText }]; // 恢复状态栏供自动补日期（后面记忆测试按故事日断言）
+  const ck = LW.Engine.callKey('沈锡元');
+  LW.Store.push(ck, [{ who: '沈锡元', kind: 'text', text: '上一轮通话的旧台词' }], 200);
+  LW.Store.push(ck, [{ who: 'sys', kind: 'sys', text: '—— 通话开始 ——' }], 200);
+  LW.Store.push(ck, [{ who: 'user', kind: 'text', text: '喂？' }], 200);
+  const oldReply = [];
+  for (let vi = 0; vi < 16; vi++) oldReply.push({ who: '沈锡元', kind: vi % 2 ? 'scene' : 'text', text: '旧回复第' + vi + '条' });
+  LW.Store.push(ck, oldReply, 200);
+  const ckHist = LW.Store.history(ck);
+  eq('通话·边界定位在最近标记后', LW.Engine.callSessionStart(ckHist), ckHist.length - 17);
+  // 8.5 节把 Apps.wechat 换成了最小桩，这里凭 realAppsBak 临时换回真身做通话交互测试
+  const stubApps = LW.Apps;
+  LW.Apps = realAppsBak;
+  LW.Apps.wechat.render = function () {};
+  LW.Apps.wechat.call = { name: '沈锡元', mode: 'video', phase: 'active', busy: false };
+  await LW.Apps.wechat.callReroll();
+  const afterRoll = LW.Store.history(ck);
+  const sess0 = LW.Engine.callSessionStart(afterRoll);
+  eq('重roll·弹净16条旧回复', afterRoll.slice(sess0).filter(function (m) { return m.who === '沈锡元'; }).length, 0);
+  eq('重roll·不越边界咬上一会话', afterRoll.slice(0, sess0).some(function (m) { return m.text === '上一轮通话的旧台词'; }), true);
+  eq('重roll·机主行与边界保留', afterRoll.length, 3);
+  LW.Apps.wechat.call = null;
+  LW.Apps = stubApps;   // 恢复最小桩，后续测试环境不变
+  eq('通话·无边界旧数据全量', LW.Engine.callSessionStart([{ who: 'user', kind: 'text', text: 'x' }]), 0);
+  // 通话记录回看：详单按「通话开始」切段（视频/语音分节、时长、通话中标记）
+  const xk = LW.Engine.callKey('许嘉文');
+  LW.Store.push(xk, [{ who: '许嘉文', kind: 'text', text: '无边界老数据台词' }], 200);
+  LW.Store.push(xk, [{ who: 'sys', kind: 'sys', text: '—— 通话开始 ——' }], 200);
+  LW.Store.push(xk, [{ who: '许嘉文', kind: 'text', text: '喂' }, { who: '许嘉文', kind: 'text', text: '听得见吗' }], 200);
+  LW.Store.push(xk, [{ who: 'user', kind: 'text', text: '嗯' }], 200);
+  LW.Store.push(xk, [{ who: '许嘉文', kind: 'text', text: '那就好' }, { who: '许嘉文', kind: 'text', text: '说正事' }, { who: '许嘉文', kind: 'text', text: '完了' }], 200);
+  LW.Store.push(xk, [{ who: 'sys', kind: 'sys', text: '通话结束 · 05:20' }], 200);
+  LW.Store.push(xk, [{ who: 'sys', kind: 'sys', text: '—— 通话开始 ——' }], 200);
+  LW.Store.push(xk, [{ who: '许嘉文', kind: 'scene', text: '[她拿起手机]' }, { who: '许嘉文', kind: 'text', text: '视频里见' }], 200);
+  LW.Store.push(xk, [{ who: 'sys', kind: 'sys', text: '通话结束 · 01:02' }], 200);
+  const xSess = LW.Engine.callSessions('许嘉文');
+  eq('回看·三段会话', xSess.length, 3);
+  eq('回看·老数据算一通且未结束', xSess[0].mode === 'audio' && xSess[0].ongoing === true, true);
+  eq('回看·语音段时长与条数', [xSess[1].mode, xSess[1].dur, xSess[1].count, xSess[1].ongoing], ['audio', '05:20', 6, false]);
+  eq('回看·画面段判为视频', [xSess[2].mode, xSess[2].dur, xSess[2].count], ['video', '01:02', 2]);
+  eq('回看·无记录返回空', LW.Engine.callSessions('查无此人').length, 0);
+  // 孤儿通话（通话中刷新页面）：closeOrphanCalls 补「通话中断」收尾——详单闭合、聊天补灰泡、幂等
+  const wk = LW.Engine.callKey('周言');
+  LW.Store.push(wk, [{ who: 'sys', kind: 'sys', text: '—— 通话开始 ——' }], 200);
+  LW.Store.push(wk, [{ who: '周言', kind: 'text', text: '喂喂' }, { who: 'user', kind: 'text', text: '在听' }], 200);
+  const wOrphan = LW.Engine.callSessions('周言');
+  eq('孤儿·收尾前 ongoing', wOrphan[wOrphan.length - 1].ongoing, true);
+  LW.Engine.closeOrphanCalls();
+  const wClosed = LW.Engine.callSessions('周言');
+  const wLast = wClosed[wClosed.length - 1];
+  eq('孤儿·中断标记闭合', [wLast.ongoing, wLast.interrupted, wLast.dur], [false, true, '']);
+  eq('孤儿·聊天记录补灰泡', LW.Store.history('周言').some(function (m) { return m.kind === 'calllog' && m.text === '通话中断'; }), true);
+  LW.Engine.closeOrphanCalls();
+  eq('孤儿·幂等不重复补', LW.Store.history('周言').filter(function (m) { return m.kind === 'calllog' && m.text === '通话中断'; }).length, 1);
+  // 边界标记落型：视频通话全程无 [画面] 行也能判对型（旧逻辑只靠 scene 嗅探会误判成语音）
+  const zk = LW.Engine.callKey('张裕民');
+  LW.Store.push(zk, [{ who: 'sys', kind: 'sys', text: '—— 通话开始 ——', mode: 'video' }], 200);
+  LW.Store.push(zk, [{ who: '张裕民', kind: 'text', text: '看得见我吗' }, { who: 'user', kind: 'text', text: '看得见' }], 200);
+  LW.Store.push(zk, [{ who: 'sys', kind: 'sys', text: '通话结束 · 00:48' }], 200);
+  const zSess = LW.Engine.callSessions('张裕民');
+  eq('回看·标记落型优先于画面嗅探', [zSess.length, zSess[0].mode, zSess[0].dur], [1, 'video', '00:48']);
+  // 通话记忆注入：三天窗过滤 + 完成带纪要/中断带原文 + 灰泡匹配
+  const zkHist = LW.Store.history(zk);
+  LW.Store.patchAt(zk, zkHist.length - 1, { summary: '两人确认了周末球赛安排与集合时间。' });
+  const ym = LW.Engine.callMemory('周言', 3);
+  eq('记忆·中断通带完整原文', ym.length >= 1 && ym[ym.length - 1].interrupted === true && ym[ym.length - 1].text.indexOf('喂喂') !== -1, true);
+  const zm = LW.Engine.callMemory('张裕民', 3);
+  eq('记忆·完成通带纪要', zm.length === 1 && zm[0].text === '两人确认了周末球赛安排与集合时间。' && zm[0].head.indexOf('视频通话 · 00:48') !== -1, true);
+  // 窗口外不带：给许嘉文造一通 6 天前的完成通话（指定 day 不被自动补日期覆盖）
+  const xk2 = LW.Engine.callKey('许嘉文');
+  LW.Store.push(xk2, [{ who: 'sys', kind: 'sys', text: '—— 通话开始 ——', mode: 'audio', day: '2034年8月20日 星期六', time: '20:00' }], 200);
+  LW.Store.push(xk2, [{ who: '许嘉文', kind: 'text', text: '上周的事', day: '2034年8月20日 星期六', time: '20:01' }], 200);
+  LW.Store.push(xk2, [{ who: 'sys', kind: 'sys', text: '通话结束 · 10:00', day: '2034年8月20日 星期六', time: '20:30' }], 200);
+  const xmNow = LW.Engine.callMemory('许嘉文', 3);
+  eq('记忆·窗口外通话不带', xmNow.length === 3 && xmNow.every(function (x) { return x.head.indexOf('今天') !== -1; }), true);
+  const wRefs = LW.Engine.sessionsForBubbles('周言', [{ who: 'user', kind: 'calllog', mode: 'audio', day: '2034年8月26日 星期五', text: '通话中断' }]);
+  eq('灰泡·匹配到中断通话段', wRefs.length === 1 && wRefs[0].interrupted === true, true);
+  eq('灰泡·无通话泡返回空', LW.Engine.sessionsForBubbles('周言', [{ who: 'user', kind: 'text', text: '普通消息' }]).length, 0);
+  LW.Engine.summarizeCall('许嘉文'); // 生成失败须静默兜底，不得抛
+  eq('纪要·生成失败静默', true, true);
+  // sys 条目：msgToLine 不带人名前缀（跨场景携带里就是干净的「语音通话 · 03:24」）
+  eq('通话·sys行格式', LW.Floor.msgToLine({ who: 'sys', kind: 'sys', text: '语音通话 · 03:24' }, '裴知意'), '语音通话 · 03:24');
+  eq('通话·callKey', LW.Engine.callKey('沈锡元'), 'call:沈锡元');
+
+  // ── 7.5 备忘录：契约解析 / 当日判重 / 日期排除 / 短重试 / 撞车不覆盖 ──
+  console.log('[备忘录]');
+  const dOk = LW.Engine.parseDiary('※备忘录※|2034-08-25|月考\n今天出分了。\n※完※');
+  eq('备忘录·标准解析', [dOk.date, dOk.title, dOk.content], ['2034-08-25', '月考', '今天出分了。']);
+  eq('备忘录·空标题容忍', LW.Engine.parseDiary('※备忘录※|2034-08-25|\n正文\n※完※').title, '');
+  eq('备忘录·日期零填充', LW.Engine.parseDiary('※备忘录※|2034-8-5|t\nx\n※完※').date, '2034-08-05');
+  eq('备忘录·中文分隔符容忍', LW.Engine.parseDiary('※备忘录※|2034年8月5日|t\nx\n※完※').date, '2034-08-05');
+  const dMulti = LW.Engine.parseDiary('※备忘录※|2034-08-25|t\n第一段。\n\n第二段。\n※完※');
+  eq('备忘录·多段保留', dMulti.content.indexOf('第一段') !== -1 && dMulti.content.indexOf('第二段') !== -1, true);
+  eq('备忘录·缺标记返回null', LW.Engine.parseDiary('今天想了很多，但没写标记。'), null);
+  eq('备忘录·key形如', LW.Engine.diaryKey('周言'), 'diary:周言');
+
+  // diaryWrite 全流程（gen 走 generateRaw 桩，日期取状态栏 fixture）
+  global.__msgs = [{ role: 'assistant', message: statusText }];
+  let dGenCalls = 0, dLastReq = null;
+  ctx.generateRaw = async (req) => {
+    dGenCalls++; dLastReq = req;
+    return '※备忘录※|2034-08-25|训练\n' + '今天正常训练，十组深蹲，下课回家。'.repeat(20) + '\n※完※';
+  };
+  const dw1 = await LW.Engine.diaryWrite('周言');
+  eq('备忘录·首次生成', dw1 && dw1.title, '训练');
+  eq('备忘录·落库条数', LW.Engine.diaryEntries('周言').length, 1);
+  ctx.generateRaw = async (req) => {
+    dGenCalls++; dLastReq = req;
+    return '※备忘录※|2034-08-24|旧账\n' + '又一篇正文内容。'.repeat(30) + '\n※完※';
+  };
+  // 纯手动：同日再点「写一篇」不拦截，并列存档（撞车也不覆盖，见撞车用例）
+  const dw3 = await LW.Engine.diaryWrite('周言');
+  eq('备忘录·同日手动再写一篇并列存档', dw3 && LW.Engine.diaryEntries('周言').length, 2);
+  eq('备忘录·提示词注入usedDates', dLastReq.ordered_prompts[2].content.indexOf('2034-08-25') !== -1, true);
+  eq('备忘录·提示词含日期排除令', dLastReq.ordered_prompts[2].content.indexOf('不可使用已存在的日期') !== -1, true);
+  // 短正文 → 补强重试一次，重试稿替换短稿
+  dGenCalls = 0;
+  ctx.generateRaw = async () => {
+    dGenCalls++;
+    return dGenCalls === 1 ? '※备忘录※|2034-08-23|短\n太短。\n※完※' : '※备忘录※|2034-08-22|写长了\n' + '这次写足了篇幅。'.repeat(40) + '\n※完※';
+  };
+  const dw4 = await LW.Engine.diaryWrite('周言');
+  eq('备忘录·短正文补强重试', dGenCalls === 2 && dw4.title === '写长了', true);
+  // 同日撞车不覆盖：AI 又选 08-22 → 并列存成第二篇
+  ctx.generateRaw = async () => '※备忘录※|2034-08-22|撞车\n' + '同一天又来一篇。'.repeat(30) + '\n※完※';
+  await LW.Engine.diaryWrite('周言');
+  eq('备忘录·同日撞车并列不覆盖', (function () {
+    const a = LW.Engine.diaryEntries('周言');
+    return a.length === 4 && a.filter(function (e) { return e.date === '2034-08-22'; }).length === 2;
+  })(), true);
+  eq('备忘录·删除', LW.Engine.diaryDeleteAt('周言', 0), true);
+  eq('备忘录·删后余量', LW.Engine.diaryEntries('周言').length, 3);
+  // Prompt.diary 装配要点：上下文在 system（chat_history 前），输出要求在 user 尾（chat_history 后）
+  const dreq = LW.Prompt.diary({ name: '周言', profile: '班长' }, [], { dateText: '2034年8月26日 星期五' }, '机主资料', ['2034-08-25'], false);
+  const dtxt = dreq.ordered_prompts[2].content;
+  eq('备忘录·输出要求在chat_history后', dreq.ordered_prompts.indexOf('chat_history') === 1 && dreq.ordered_prompts[0].content.indexOf('输出要求') === -1, true);
+  eq('备忘录·上下文在system', dreq.ordered_prompts[0].content.indexOf('人物档案 · 周言') !== -1, true);
+  eq('备忘录·字数下限', dtxt.indexOf('不少于 500 字') !== -1, true);
+  eq('备忘录·限知禁令', dtxt.indexOf('严禁：本人不知道的任何信息') !== -1, true);
+  eq('备忘录·回味许可', dtxt.indexOf('值得回味') !== -1, true);
+  const dreq2 = LW.Prompt.diary({ name: '周言' }, [], null, '', [], true);
+  eq('备忘录·短重试标记', dreq2.ordered_prompts[2].content.indexOf('过短被驳回') !== -1, true);
+  const dreq3 = LW.Prompt.diary({ name: '周言' }, [], null, '', [], false);
+  eq('备忘录·无存量日期不注排除', dreq3.ordered_prompts[2].content.indexOf('不可使用已存在的日期') === -1, true);
+  // 日期窗口过滤：排除清单只留可选窗口附近（未来1天~过去9天）的日期，旧日期不罗列防无限膨胀
+  const _dw = LW.Engine._diaryWindowDates(['2034-08-01', '2034-08-19', '2034-08-24', '2034-08-26', '2034-08-27', 'bad'], '2034年8月26日 星期五');
+  eq('备忘录·日期窗口过滤', JSON.stringify(_dw), JSON.stringify(['2034-08-19', '2034-08-24', '2034-08-26', '2034-08-27']));
+  // 聊天记录走 chat_history 标准槽位（与主生成同一管线）：order 含槽位；不设楼数上限——
+  // 截断只会从最旧侧砍掉 summary 衔接带，用户自有压缩体系兜底
+  const dreq4 = LW.Prompt.diary({ name: '周言' }, [], { dateText: '2034年8月26日 星期五' }, '', ['2034-08-25'], false);
+  eq('备忘录·历史走chat_history槽位', dreq4.ordered_prompts.indexOf('chat_history') !== -1, true);
+  eq('备忘录·无楼数上限', dreq4.max_chat_history, undefined);
+  const dtxt4 = dreq4.ordered_prompts[2].content;
+  eq('备忘录·关系锚定规则', dtxt4.indexOf('关系亲疏以聊天记录为准') !== -1, true);
+  eq('备忘录·summary残片声明', dtxt4.indexOf('可作参考，不是任何人物说的话') !== -1, true);
+  eq('备忘录·抒情不是禁区', dtxt4.indexOf('抒情不是禁区') !== -1 && dtxt4.indexOf('禁止空洞抒情') === -1, true);
+  eq('备忘录·不要警句金句', dtxt4.indexOf('不要警句式金句') !== -1 && dtxt4.indexOf('不必事事靠侧写绕') !== -1, true);
+  eq('备忘录·无实现元叙述', dtxt4.indexOf('插件注入') === -1 && dtxt4.indexOf('剧情长卷') === -1 && dtxt4.indexOf('历史存档') === -1, true);
+  global.__msgs = [{ role: 'assistant', message: statusText }];
+  // 清理：日记条目留在内存变量无碍，但顺手清掉免得影响后续下标类测试
+  while (LW.Engine.diaryEntries('周言').length) LW.Store.removeAt(LW.Engine.diaryKey('周言'), LW.Engine.diaryEntries('周言').length - 1);
+
+  // ── 8. 设置项：cfg 默认值 / 覆写 / 非法回退 / apiConfig 四模式 ──
+  console.log('[设置项]');
+  LW.Store.setSettings({ plotFloors: 3, histPriv: 20, crossMax: 2, crossLines: 9 });
+  const c1 = LW.Store.cfg();
+  eq('cfg·覆写生效', [c1.plotFloors, c1.histPriv, c1.crossMax, c1.crossLines], [3, 20, 2, 9]);
+  eq('cfg·未动项取默认', c1.plotCap, 1000);
+  LW.Store.setSettings({ plotFloors: -5, histPriv: 'abc' });
+  const c2 = LW.Store.cfg();
+  eq('cfg·非法值回退默认', [c2.plotFloors, c2.histPriv], [8, 50]);
+  eq('cfg·已删项不再出现', 'diaryFloors' in c2, false);
+  LW.Store.setSettings({ plotFloors: 3 });
+  // 提示词跟随设置：主线楼数 3 → 只带 3 楼
+  global.__msgs = [
+    { role: 'user', message: '一楼正文' }, { role: 'assistant', message: '二楼正文' },
+    { role: 'user', message: '三楼正文' }, { role: 'assistant', message: '四楼正文' },
+  ];
+  const preq = LW.Prompt.private({ name: '周言', profile: '班长' }, [], null, [], [], '', '机主资料', [], null, '', '');
+  const ptxt = preq.ordered_prompts[0].content;
+  eq('设置·主线只带3楼', ptxt.indexOf('一楼正文') === -1 && ptxt.indexOf('二楼正文') !== -1 && ptxt.indexOf('四楼正文') !== -1, true);
+  LW.Store.setSettings({ plotFloors: undefined, histPriv: undefined, crossMax: undefined, crossLines: undefined });
+  eq('cfg·清空后回默认', LW.Store.cfg().plotFloors, 8);
+  // apiConfig 四模式
+  const lsStore = {};
+  ctx.localStorage = { getItem: (k) => lsStore[k] || null, setItem: (k, v) => { lsStore[k] = v; } };
+  eq('api·默认跟随', LW.Engine.apiConfig(), undefined);
+  LW.Store.setSettings({ api: { mode: 'model', model: 'gemini-3.1' } });
+  eq('api·只换模型', LW.Engine.apiConfig(), { model: 'gemini-3.1' });
+  LW.Store.setSettings({ api: { mode: 'preset', preset: 'MyProxy' } });
+  eq('api·旧版代理预设已剔除→回退跟随', LW.Engine.apiConfig(), undefined);
+  ctx.localStorage.setItem('dhwj_phone_apikey', 'sk-test');
+  LW.Store.setSettings({ api: { mode: 'custom', apiurl: 'https://x.dev', cmodel: 'm1' } });
+  eq('api·自定义带本机密钥', LW.Engine.apiConfig(), { apiurl: 'https://x.dev', key: 'sk-test', model: 'm1', source: 'openai' });
+  LW.Store.setSettings({ api: { mode: 'custom', apiurl: '' } });
+  eq('api·自定义缺地址回退跟随', LW.Engine.apiConfig(), undefined);
+  LW.Store.setSettings({ api: undefined });
+  eq('api·清空回跟随', LW.Engine.apiConfig(), undefined);
+  LW.Store.setSettings({ api: { mode: 'custom', apiurl: 'https://g.dev', source: 'makersuite', cmodel: 'gemini-3.1' } });
+  eq('api·自定义可换makersuite源', LW.Engine.apiConfig().source, 'makersuite');
+  LW.Store.setSettings({ api: undefined });
+  eq('cfg·注入四键默认', [LW.Store.cfg().injRecent, LW.Store.cfg().injMention, LW.Store.cfg().injMax, LW.Store.cfg().injRounds], [4, 4, 3, 40]);
+  LW.Store.setSettings({ injRounds: 60 });
+  eq('cfg·注入键可覆写', LW.Store.cfg().injRounds, 60);
+  LW.Store.setSettings({ injRounds: undefined });
+
+  // ── UI 源码静态检查（回归保险丝）──
+  console.log('[UI 源码]');
+  const wsrc = fs.readFileSync(path.join(ROOT, 'src/apps/wechat.js'), 'utf8');
+  const usrc = fs.readFileSync(path.join(ROOT, 'src/apps/uikit.js'), 'utf8');
+  const dsrc = fs.readFileSync(path.join(ROOT, 'src/apps/diary.js'), 'utf8');
+  eq('关闭app·有点击绑定', wsrc.includes('ph.querySelectorAll(\'[data-app="close"]\').forEach'), true);
+  eq('关闭app·绑定未被误改成正则字面量（fdb0520 事故）', /^\s*\/\s*ph\\\./m.test(wsrc), false);
+  eq('选线弹窗·按可视视口显式定位', wsrc.includes('function placeLinesPop') && wsrc.includes('visualViewport'), true);
+  // 正文注入·幽灵残留保险丝：入口无条件清除同名键（stc.extensionPrompts 直删），且先于所有 return 分支
+  // （注意：uninjectPrompts( 里含着 injectPrompts( 子串——截取到 injectPrompts([{ 处，注释先行剥掉）
+  const esrc = fs.readFileSync(path.join(ROOT, 'src/engine.js'), 'utf8');
+  const injBody = esrc.slice(esrc.indexOf('injectDigest: function'));
+  const injCut = injBody.slice(0, injBody.search(/\n\s*injectPrompts\(\[\{/));
+  const injNoCmt = injCut.replace(/\/\/[^\n]*/g, '');
+  eq('正文注入·入口先清同名键', injNoCmt.includes("delete stc.extensionPrompts['dhwj-phone-digest']"), true);
+  eq('正文注入·清除先于所有return分支', injNoCmt.indexOf('extensionPrompts') !== -1 && injNoCmt.indexOf('extensionPrompts') < injNoCmt.search(/return/), true);
+  eq('正文注入·注入分支同名键摘除', esrc.includes("uninjectPrompts(['dhwj-phone-digest'])"), true);
+  // 图床双源保险丝：主源 jsdelivr、catbox 兜底、回退监听、壁纸 CSS 变量
+  eq('图床·主源catbox', esrc.indexOf("var IMG_BASE = 'https://files.catbox.moe/'") !== -1, true);
+  eq('图床·仓库镜像兜底常量', esrc.indexOf("IMG_BASE_FALLBACK = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/donghai_wangshi@main/img/'") !== -1, true);
+  eq('图床·img回退监听', esrc.indexOf("addEventListener('error', function (ev)") !== -1 && esrc.indexOf('dhwjFbk') !== -1, true);
+  eq('壁纸·CSS变量可换源', wsrc.includes('var(--dhwj-wall') && wsrc.includes("setProperty('--dhwj-wall'") && wsrc.includes('HOME_WALL_FB'), true);
+  // 备忘录回归保险丝：主屏入口 / 生成判重与排除 / 重roll先删再写
+  const psrc = fs.readFileSync(path.join(ROOT, 'src/prompt.js'), 'utf8');
+  eq('备忘录·主屏入口', wsrc.includes('data-app="diary"') && wsrc.includes('ICON_MEMO'), true);
+  eq('备忘录·写一篇与选人绑定', dsrc.includes('[data-dwrite]') && dsrc.includes('[data-dnpc]'), true);
+  eq('备忘录·重roll先确认再删写', dsrc.includes('reroll') && dsrc.includes('drerollok') && dsrc.indexOf('Engine.diaryDeleteAt(this.diaryNpc, idx)') === -1, true);
+  // 拆分保险丝：wechat 只留委托，不得残留备忘录屏幕与样式；esc 单一实现在 uikit
+  eq('备忘录·wechat仅委托', wsrc.includes('DiaryApp.render(this)') && wsrc.includes('DiaryApp.bind(ph, UI)') && wsrc.indexOf('dhwj-dread') === -1 && wsrc.indexOf('function esc') === -1, true);
+  eq('通话·最小化按钮', wsrc.includes("'callmin'") && wsrc.includes('dhwj-callmin') && wsrc.indexOf("a === 'callmin'") !== -1, true);
+  eq('通话·记录回看入口', wsrc.includes('data-chist') && wsrc.includes("screen === 'callhist'") && wsrc.includes("screen === 'callview'") && wsrc.indexOf('callSessions') !== -1, true);
+  eq('通话·回看复刻通话屏', wsrc.includes('dhwj-scr-chv') && wsrc.indexOf('callscene') !== -1 && wsrc.indexOf("m.kind === 'scene'") !== -1, true);
+  eq('通话·回看返回键反白', wsrc.indexOf('.dhwj-scr-chv .dhwj-appbar .dhwj-back path{stroke:#fff}') !== -1, true); // SVG 描边写死，color 覆不到
+  eq('朋友圈·热度与虚构人物条款', psrc.indexOf('至多 12 人') !== -1 && psrc.indexOf('可虚构次要人物') !== -1, true);
+  eq('朋友圈·身份号召力标度', psrc.indexOf('动态分量 × 发动态者的号召力') !== -1 && psrc.indexOf('动态分量 × 号召力') !== -1, true);
+  eq('朋友圈·NPC动态评论上限8', psrc.indexOf('每条动态至多 8 条') !== -1, true);
+  eq('朋友圈·接话虚构与热度', psrc.indexOf('生成 0~8 条接话评论') !== -1 && psrc.indexOf('别硬拉不熟的人互评') !== -1, true);
+  eq('朋友圈·赞显示压缩', wsrc.indexOf("等 ' + lk.length + ' 人") !== -1, true);
+  eq('通话·换行以完整句子为单位', psrc.indexOf('换行以完整句子为单位') !== -1 && psrc.indexOf('砍成多行') !== -1, true);
+  eq('通话·单轮上限放宽并留痕', esrc.indexOf('callCap') !== -1 && wsrc.indexOf('eng.callCap') !== -1, true);
+  eq('通话·记忆对齐三件套', esrc.indexOf('_callExtras') !== -1 && psrc.indexOf('机主发过的朋友圈（近3天）') !== -1, true);
+  eq('通话·关系基调后置', psrc.indexOf('基调\\n机主与「') !== -1 && psrc.indexOf('关系基调：机主与「') !== -1, true);
+  eq('通话·反色情腔机制条款', psrc.indexOf('通用色情腔') !== -1 && psrc.indexOf('功能性速写') !== -1, true);
+  eq('群聊·成员关系挂名', psrc.indexOf('（与机主：') !== -1, true);
+  // 记忆对齐与基调后置的行为断言：digest 进通话轮提示词、关系基调落在末位
+  const memTurn = LW.Prompt.callTurn({ name: '沈锡元', profile: '' }, '', [], { dateText: '2034年8月26日 星期五', npc: { relation: '地下情人' } }, '', 'audio', [], '', [], '', '提要测试内容', '', '');
+  const memTxt = memTurn.ordered_prompts[0].content;
+  eq('通话轮·digest注入', memTxt.indexOf('提要测试内容') !== -1, true);
+  eq('通话轮·基调落在输出要求前', memTxt.indexOf('【地下情人】') > memTxt.indexOf('## 输出要求') - 500 && memTxt.indexOf('【地下情人】') < memTxt.indexOf('## 输出要求'), true);
+  // 任务描述三分支：无 user 话且无记录 = 刚接通的开场；无 user 话有记录 = 重说；有 user 话 = 回应
+  const tOpen = LW.Prompt.callTurn({ name: '蒋默', profile: '' }, '', [], null, '', 'video', [], '', [], '');
+  eq('通话轮·开场任务描述', tOpen.ordered_prompts[1].content.indexOf('刚刚拨通了') !== -1 && tOpen.ordered_prompts[1].content.indexOf('开场') !== -1, true);
+  const tReroll = LW.Prompt.callTurn({ name: '蒋默', profile: '' }, '裴知意：喂', [], null, '', 'video', [], '', [], '');
+  eq('通话轮·重说任务描述', tReroll.ordered_prompts[1].content.indexOf('上面记录中最后的话') !== -1 && tReroll.ordered_prompts[1].content.indexOf('重新') === -1, true);
+  const tReply = LW.Prompt.callTurn({ name: '蒋默', profile: '' }, '裴知意：喂', [], null, '', 'video', [], '嗯，在听', [], '');
+  eq('通话轮·回应任务描述', tReply.ordered_prompts[1].content.indexOf('说：「嗯，在听」') !== -1, true);
+  eq('通话轮·NSFW不重复', (function () { var s = memTxt; return s.indexOf('[亲密场合叙事风格指引]') === s.lastIndexOf('[亲密场合叙事风格指引]'); })(), true);
+  eq('通话·新内容自动滚底', wsrc.indexOf('_callNew') !== -1 && wsrc.indexOf('meRow.offsetTop') !== -1, true); // 锚定机主末条，非粗暴滚到底
+  eq('开场白QR·四件套在位', esrc.indexOf('qrOpenings') !== -1 && esrc.indexOf('openingInsert') !== -1 && esrc.indexOf('dhwj-open-pop') !== -1 && esrc.indexOf('alternate_greetings') !== -1 && esrc.indexOf('/gamestart/i') !== -1 && esrc.indexOf('createChatMessages') !== -1 && esrc.indexOf('DHWJ_OPENINGS') !== -1, true);
+  // IF 线记录（时代+IF 双记录，跨聊天归位对账——成人聊天挂高中 IF 的互染修复）
+  eq('IF线·记录读写清', (function () {
+    LW.Store.setLineIf('高中·新城的月亮');
+    var a = LW.Store.lineIf();
+    LW.Store.setLineIf('');
+    return a === '高中·新城的月亮' && LW.Store.lineIf() === '';
+  })(), true);
+  eq('IF线·归位机制在位', esrc.indexOf('ifStateMatches') !== -1 && esrc.indexOf('lineIfOps(target, savedIf || null)') !== -1 && wsrc.indexOf('setLineIf') !== -1, true);
+  // 开场白配置不依赖 0 楼渲染：从卡内嵌正则文本抠 GS_CONFIG（括号配平+字符串感知）
+  const _cfgProbe = LW.Engine._extractObj("var GS_CONFIG = { worldbooks: ['W'], swipeOffset: 1, groups: [{ line: 'DLC·高中', items: [{ page: 1, title: 't】{', ifName: '', open: [] }] }] };", 'GS_CONFIG');
+  eq('开场白·脚本文本抠配置', _cfgProbe && _cfgProbe.groups.length === 1 && _cfgProbe.groups[0].items[0].title === 't】{' && _cfgProbe.swipeOffset === 1, true);
+  eq('开场白·抠取健壮性', LW.Engine._extractObj('nothing here', 'GS_CONFIG') === null && LW.Engine._extractObj('var GS_CONFIG = { a: 1; broken', 'GS_CONFIG') === null, true);
+  eq('开场白·预载与三级读取在位', esrc.indexOf('_preloadOpeningsCfg') !== -1 && esrc.indexOf('getTavernRegexes') !== -1, true);
+  eq('开场白·小屏钳位', esrc.indexOf('offsetHeight') !== -1 && esrc.indexOf('Math.max(10') !== -1, true);
+  eq('开场白·头部固定与无滚动条拖动', esrc.indexOf('dhwj-open-list{flex:1;min-height:0;overflow-y:auto') !== -1 && esrc.indexOf('::-webkit-scrollbar{width:0') !== -1 && esrc.indexOf('scrollbar-width:none') !== -1 && esrc.indexOf('grabbing') !== -1, true);
+  eq('聊天·头像开名片', wsrc.includes('dhwj-ava" data-cdet="') && wsrc.indexOf('.dhwj-chatrow .dhwj-ava{cursor:pointer}') !== -1, true);
+  eq('通话·孤儿收尾', esrc.includes('closeOrphanCalls') && esrc.includes('通话中断'), true);
+  eq('通话·边界标记仅拨号打一次', (wsrc.match(/—— 通话开始 ——/g) || []).length, 1); // 前移后接通处不得再打，否则响铃期界面错位复发
+  eq('uikit·共享件在位', usrc.includes('dhwj-scrim') && usrc.includes('dhwj-cbtn') && usrc.includes('function esc') && usrc.includes('ICON_REROLL'), true);
+  // 保险丝：当日判重已随纯手动化删除——引擎不得残留 lastGenDay，备忘录不得有自动补写
+  eq('备忘录·当日判重已清除', esrc.indexOf('lastGenDay') === -1 && esrc.includes('diaryWrite'), true);
+  eq('备忘录·无自动补写', wsrc.indexOf('diaryEnsure') === -1 && dsrc.indexOf('diaryEnsure') === -1, true);
+  eq('备忘录·usedDates注入排除', esrc.includes('usedDates') && psrc.includes('不可使用已存在的日期'), true);
+  eq('备忘录·当天优先与张冠李戴禁令', psrc.indexOf('优先写当天') !== -1 && psrc.indexOf('张冠李戴是备忘录的头号事故') !== -1 && esrc.includes('_diaryWindowDates'), true);
+  eq('备忘录·契约标记', psrc.includes('※备忘录※|日期|标题') && psrc.includes('※完※'), true);
+  eq('备忘录·短重试补强', esrc.indexOf('正文过短') !== -1 && psrc.indexOf('过短被驳回') !== -1, true);
+  // 日记历史回归保险丝：必须走 chat_history 标准槽位（与主生成同管线），自拼残留清零
+  eq('备忘录·历史走chat_history槽位', psrc.indexOf("'chat_history'") !== -1 && psrc.indexOf('diaryFloors') === -1, true);
+  eq('备忘录·无自拼残留', psrc.indexOf('function longArc') === -1 && psrc.indexOf('function deepArchive') === -1 && psrc.indexOf('function extractSum') === -1 && psrc.indexOf('function sumTagRe') === -1, true);
+  eq('备忘录·关系锚定规则', psrc.includes('关系亲疏以聊天记录为准'), true);
+  eq('备忘录·无实现元叙述', psrc.indexOf('插件注入') === -1 && psrc.indexOf('剧情长卷') === -1 && psrc.indexOf('历史存档') === -1, true);
+  eq('设置·无日记楼数项', wsrc.indexOf('diaryFloors') === -1 && psrc.indexOf('diaryFloors') === -1, true);
+  global.__msgs = null;
+  LW.Engine.applyLine(null, '收尾');
+  console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
+  process.exit(fail ? 1 : 0);
+})();

@@ -1,0 +1,48 @@
+// ═══════════════════════════════════════════════════════════
+//  apps/uikit.js —— 手机 UI 共享件：esc / 确认弹窗等通用 CSS / 跨应用图标
+//  任何 app 的屏幕都直接取用；新增 app 优先复用这里的东西而不是重造。
+//  注意：构建按序裸拼接，无模块系统，跨文件一律走 window.DHWJ 命名空间。
+// ═══════════════════════════════════════════════════════════
+(function () {
+  'use strict';
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // ── 通用 CSS（多 app 共用的弹窗/提示/按钮，先于各 app 样式注入） ──
+  var css = [
+    '.dhwj-sysrow{text-align:center;font-size:11.5px;color:#9aa0a8;margin:10px 0}',
+    // 确认弹窗（删除/重roll等）：遮罩 + 白卡，暗色场景由 .dhwj-callpop/.dhwj-calldel 覆写
+    '.dhwj-scrim{position:absolute;inset:0;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center;z-index:50}',
+    '.dhwj-confirm{background:#fff;border-radius:14px;padding:20px 20px 14px;width:216px;text-align:center;font-size:14px;color:#111;box-shadow:0 8px 30px rgba(0,0,0,.25)}',
+    '.dhwj-cbtns{display:flex;gap:8px;margin-top:13px}',
+    '.dhwj-cbtn{flex:1;border:none;border-radius:8px;padding:6px 0;font-size:14px;cursor:pointer}',
+    '.dhwj-cbtn.no{background:#f2f3f5;color:#333}',
+    '.dhwj-cbtn.yes{background:#e64b4b;color:#fff}',
+    // 干净细滚动条（多容器共用）：纯色细拇指、无轨道底色、无箭头。
+    // Chromium 系只走 ::-webkit-scrollbar 伪元素。★切勿在这些容器上写 standard 属性
+    // （scrollbar-width/scrollbar-color）：Chromium 检测到后会放弃悬浮条、改画经典滚动条
+    // （两端按系统主题画三角按钮），且 standard 优先级压过伪元素、规则全部失效
+    // （2026-09 三角之谜的元凶；霖州往事 dist 恰无 standard 属性故始终干净）。
+    // Firefox 没有 webkit 伪元素，standard 属性全部收进下方 @supports 块，Chromium 永不执行。
+    '.dhwj-body::-webkit-scrollbar,.dhwj-dlist::-webkit-scrollbar,.dhwj-stickgrid::-webkit-scrollbar,.dhwj-lpop-list::-webkit-scrollbar{width:4px}',
+    '.dhwj-body::-webkit-scrollbar-track,.dhwj-dlist::-webkit-scrollbar-track,.dhwj-stickgrid::-webkit-scrollbar-track,.dhwj-lpop-list::-webkit-scrollbar-track{background:transparent}',
+    '.dhwj-body::-webkit-scrollbar-thumb,.dhwj-dlist::-webkit-scrollbar-thumb,.dhwj-stickgrid::-webkit-scrollbar-thumb,.dhwj-lpop-list::-webkit-scrollbar-thumb{background:rgba(0,0,0,.16);border-radius:2px}',
+    // Firefox 专用兜底：仅不支持 ::-webkit-scrollbar 的浏览器（Firefox）进入本块——
+    // 屏幕内任何可滚元素强制细条+透明轨道；各 app 隐藏滚动条的 scrollbar-width:none
+    // 也在本块，注入顺序靠后仍可覆盖细条声明。Chromium/Safari 跳过本块走纯伪元素路径。
+    '@supports not selector(::-webkit-scrollbar){.dhwj-body,.dhwj-dlist,.dhwj-stickgrid,.dhwj-lpop-list,.dhwj-dread{scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.18) transparent}.dhwj-screen *{scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.16) transparent}.dhwj-ttolist,.dhwj-panel,.dhwj-callsubs,.dhwj-mfeed{scrollbar-width:none}}',
+    // 端部按钮保险栓：经典模式下按主题画出的三角按钮显式置零（悬浮/自定义路径本就不画）
+    '#dhwj-phone ::-webkit-scrollbar-button{display:none;width:0;height:0}'
+  ].join('\n');
+
+  // ── 跨应用图标（window 全局，各文件 IIFE 内直接按名引用） ──
+  window.ICON_REROLL = '<svg width="18" height="18" viewBox="0 0 1024 1024"><path fill="currentColor" d="M512 85.333333c102.869333 0 199.509333 36.693333 275.029333 100.437334l93.866667-94.037334a21.333333 21.333333 0 0 1 36.437333 15.061334V384a21.333333 21.333333 0 0 1-21.333333 21.333333h-276.693333a21.333333 21.333333 0 0 1-15.104-36.394666l122.325333-122.496a341.333333 341.333333 0 1 0 118.314667 341.632 42.666667 42.666667 0 1 1 83.2 18.901333A426.794667 426.794667 0 0 1 512 938.666667C276.352 938.666667 85.333333 747.648 85.333333 512S276.352 85.333333 512 85.333333z"/></svg>';
+  window.ICON_TRASH = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.8 6V4.9a1.4 1.4 0 0 1 1.4-1.4h1.6a1.4 1.4 0 0 1 1.4 1.4V6.5M6.8 6.5l.7 12a1.9 1.9 0 0 0 1.9 1.8h5.2a1.9 1.9 0 0 0 1.9-1.8l.7-12M10 10.5v6M14 10.5v6"/></svg>';
+
+  window.DHWJ = window.DHWJ || {};
+  window.DHWJ.Uikit = { esc: esc, css: css };
+})();
