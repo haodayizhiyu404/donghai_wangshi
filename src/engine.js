@@ -1875,9 +1875,19 @@
             var bar = doc.getElementById('qr--bar');
             if (!bar) return;
             // 挂载点 = 最后一个原生 QR 按钮的父级：combined/非 combined、有无内层
-            // 容器、版本差异全都不用猜，原生按钮排得进一行，我们就跟得上
-            var natives = bar.querySelectorAll('.qr--button:not(.dhwj-qr)');
-            var holder = (natives.length ? natives[natives.length - 1].parentNode : null) || bar.querySelector('.qr--buttons') || bar;
+            // 可见性判定（含祖先链）：QR 收纳类插件（如 uhhhh15/QR）会把白名单外的集合容器
+            // display:none 收进自己的菜单——挂载点必须跳过这类隐藏容器，否则按钮跟着蒸发。
+            // 注意不能只看按钮自身：容器被藏时子元素自己的 display 仍是 flex。
+            var visOk = function (el) {
+              while (el && el.nodeType === 1 && el !== doc.body) {
+                try { if (window.parent.getComputedStyle(el).display === 'none') return false; } catch (e) {}
+                el = el.parentNode;
+              }
+              return true;
+            };
+            var natives = Array.prototype.slice.call(bar.querySelectorAll('.qr--button:not(.dhwj-qr)')).filter(visOk);
+            // 可见原生按钮的父级优先；一个可见的都没有（全被收纳/未启用）时直接挂 bar 本体
+            var holder = (natives.length ? natives[natives.length - 1].parentNode : null) || bar;
             // 一次性结构日志（排查换行/挂载问题用，F12 控制台可见）
             if (!self._qrLogged) {
               self._qrLogged = true;
@@ -1885,12 +1895,13 @@
                 var cs = window.parent.getComputedStyle(holder);
                 console.log('[东海引擎] QR 挂载点 class=' + holder.className +
                   ' disp=' + cs.display + ' wrap=' + cs.flexWrap + ' w=' + holder.offsetWidth +
-                  ' / bar w=' + bar.offsetWidth + ' / 原生按钮数=' + natives.length);
+                  ' / bar w=' + bar.offsetWidth + ' / 可见原生按钮数=' + natives.length);
               } catch (e9) {}
             }
-            // 通讯录定位不到（无手机世界线）时不显示手机按钮
+            // 通讯录定位不到（无手机世界线）时不显示手机按钮。
+            // alive 额外要求按钮自身可见：插件中途把容器藏起来后，下个 tick 自动重建到新挂载点。
             var wantPhone = !!W.Engine.section();
-            var alive = !!(self._qrBtns && self._qrBtns.length && self._qrBtns.every(function (b) { return b.parentNode === holder; }));
+            var alive = !!(self._qrBtns && self._qrBtns.length && self._qrBtns.every(function (b) { return b.parentNode === holder && visOk(b); }));
             if (alive && (self._qrBtns.length === (wantPhone ? 1 : 0))) return;
             if (self._qrBtns) self._qrBtns.forEach(function (b) { if (b.parentNode) b.remove(); });
             // 东海 v1 单线：只挂「手机」按钮。「世界线」「开场白」按钮暂不挂出——
