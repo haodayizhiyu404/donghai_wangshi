@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════
 //  东海往事 · 数字世界引擎（构建产物，勿手改）
 //  源码见 src/ · 构建：node build/build.js
-//  构建时间（本地）：2026-10-07 09:45
+//  构建时间（本地）：2026-10-07 10:01
 // ═══════════════════════════════════════════════════════════
-var __DHWJ_BUILD__ = '2026-10-07 09:45';
+var __DHWJ_BUILD__ = '2026-10-07 10:01';
 try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } catch (e) {}
 
 // ── src/store.js ──
@@ -2206,9 +2206,26 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
     try { pdoc().documentElement.style.setProperty('--dhwj-wall', 'url("' + src.main + '")'); } catch (e) {}
     try {
       var probe = new Image();
+      var triedFb = false;
+      probe.crossOrigin = 'anonymous';   // 要画布采样必须带 CORS；源不放行则测不了亮度，维持默认深色字
       probe.onerror = function () {
-        if (src.main === src.fb) return;
+        if (triedFb || src.main === src.fb) return;
+        triedFb = true;
         try { pdoc().documentElement.style.setProperty('--dhwj-wall', 'url("' + src.fb + '")'); } catch (e) {}
+        probe.src = src.fb;   // 兜底源继续走 onload 采样
+      };
+      probe.onload = function () {
+        try {
+          var cv = pdoc().createElement('canvas');
+          cv.width = cv.height = 24;
+          var cx = cv.getContext('2d');
+          cx.drawImage(probe, 0, 0, 24, 24);
+          var d = cx.getImageData(0, 0, 24, 24).data;
+          var sum = 0, n = 0;
+          for (var i = 0; i < d.length; i += 4) { sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
+          // 深色背景（平均亮度<110）→ <html> 挂 dhwj-wall-dark，桌面时钟/应用名/状态栏反白
+          pdoc().documentElement.classList.toggle('dhwj-wall-dark', (sum / n) < 110);
+        } catch (e) {}
       };
       probe.src = src.main;
     } catch (e) {}
@@ -2315,6 +2332,11 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
     '.dhwj-hometime .d{font-size:14.5px;font-weight:600;letter-spacing:2.5px;margin-top:5px;opacity:.85}',
     // 应用名在浅色壁纸上用深字
     '.dhwj-scr-home .dhwj-app>span{color:#46536f;text-shadow:0 1px 4px rgba(255,255,255,.7)}',
+    /* 深色壁纸反白：applyWall 的探针测背景平均亮度，偏暗则给 <html> 挂 dhwj-wall-dark。
+       图片跨域被污染（个别源不放 CORS 头）时测不了，维持默认深色字，不裂体验。 */
+    'html.dhwj-wall-dark #dhwj-phone .dhwj-hometime{color:#f2f5fa;text-shadow:0 1px 12px rgba(0,0,0,.6)}',
+    'html.dhwj-wall-dark #dhwj-phone .dhwj-scr-home .dhwj-app>span{color:#f2f5fa;text-shadow:0 1px 6px rgba(0,0,0,.55)}',
+    'html.dhwj-wall-dark #dhwj-phone .dhwj-scr-home .dhwj-sbar{color:#fff}',
     '.dhwj-homegrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px 8px}',
     '.dhwj-app{display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;color:#fff}',
     '.dhwj-app-ico{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;',
@@ -3268,8 +3290,8 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
           '<div class="dhwj-mme"><span class="nm">' + esc(userName) + '</span>' +
           (uav ? '<img class="av" src="' + esc(uav) + '" alt="">' : '<div class="av">' + esc(userName.slice(0, 1)) + '</div>') + '</div></div>' +
           '<div class="dhwj-mpad"></div>' +
+          (this.mBusy ? '<div class="dhwj-sysrow" style="margin-top:44px">朋友们正在更新…</div>' : '') +
           (postsHtml || '<div class="dhwj-sysrow" style="margin-top:44px">朋友们还没发动态<br>稍等片刻，或退出重进刷新</div>') +
-          (this.mBusy ? '<div class="dhwj-sysrow">朋友们正在更新…</div>' : '') +
           (this.mConfirmDel >= 0 ? '<div class="dhwj-scrim"><div class="dhwj-confirm">删除这条动态？<div class="dhwj-cbtns"><button class="dhwj-cbtn no" data-cact="mdelno">取消</button><button class="dhwj-cbtn yes" data-cact="mdelok">删除</button></div></div></div>' : '') +
           '</div>';
 
@@ -4774,8 +4796,9 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
     var h = Math.max(420, Math.min(680, vh - 20));
     ph.style.width = w + 'px';
     ph.style.height = h + 'px';
-    var left = savedPos ? savedPos.left : (vp ? vp.offsetLeft : 0) + vw - w - 8;
-    var top = savedPos ? savedPos.top : (vp ? vp.offsetTop : 0) + vh - h - 8;
+    // 默认位置：左侧贴边、垂直居中（拖动过后记住手动位置，不再回默认）
+    var left = savedPos ? savedPos.left : (vp ? vp.offsetLeft : 0) + 8;
+    var top = savedPos ? savedPos.top : (vp ? vp.offsetTop : 0) + (vh - h) / 2;
     ph.style.left = Math.max(4, Math.min(left, vw - w - 4)) + 'px';
     ph.style.top = Math.max(4, Math.min(top, vh - h - 4)) + 'px';
     ph.style.right = 'auto';
