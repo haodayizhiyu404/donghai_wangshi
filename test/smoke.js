@@ -210,7 +210,8 @@ ctx.getWorldbook = async () => [
         name: '霖附吃瓜二手交易市场', open: true, avatar: 'g.png',
         style: '节奏快', crowd: '超百人，多为陌生人',
         members: ['周言', '{{user}}', '陆飞', '外校生']
-      }]
+      }],
+      wall: 'testwall.jpg'
     }
   }) },
   { comment: '周言', enabled: true, content: '周言的单人条目内容（短标题兜底）' },
@@ -240,6 +241,7 @@ ctx.getWorldbook = async () => [
   eq('群members透传', JSON.stringify(g0.members), '["周言","陆飞","外校生"]');
   eq('群members滤掉user宏', g0.members.indexOf('{{user}}') === -1, true);
   eq('联系人avatar透传', (wb.rosters['DLC·高中'].contacts || [])[0].avatar, 'a.png');
+  eq('壁纸wall字段透传', wb.rosters['DLC·高中'].wall, 'testwall.jpg');
   eq('短标题条目兜底档案', wb.profiles['周言'], '周言的单人条目内容（短标题兜底）');
   eq('人设条目优先于块', wb.profiles['林溪'], '林溪的手机专用档案');
   // 线作用域条目：只进线库，不再进全局池（防两条线共用一版档案）
@@ -931,8 +933,8 @@ ctx.getWorldbook = async () => [
   eq('正文注入·清除先于所有return分支', injNoCmt.indexOf('extensionPrompts') !== -1 && injNoCmt.indexOf('extensionPrompts') < injNoCmt.search(/return/), true);
   eq('正文注入·注入分支同名键摘除', esrc.includes("uninjectPrompts(['dhwj-phone-digest'])"), true);
   // 图床双源保险丝：主源 jsdelivr、catbox 兜底、回退监听、壁纸 CSS 变量
-  eq('图床·主源catbox', esrc.indexOf("var IMG_BASE = 'https://files.catbox.moe/'") !== -1, true);
-  eq('图床·仓库镜像兜底常量', esrc.indexOf("IMG_BASE_FALLBACK = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/donghai_wangshi@main/img/'") !== -1, true);
+  eq('图床·主源phone-assets', esrc.indexOf("var IMG_BASE = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/phone-assets@main/img/'") !== -1, true);
+  eq('图床·catbox兜底常量', esrc.indexOf("IMG_BASE_FALLBACK = 'https://files.catbox.moe/'") !== -1, true);
   eq('图床·img回退监听', esrc.indexOf("addEventListener('error', function (ev)") !== -1 && esrc.indexOf('dhwjFbk') !== -1, true);
   eq('壁纸·CSS变量可换源', wsrc.includes('var(--dhwj-wall') && wsrc.includes("setProperty('--dhwj-wall'") && wsrc.includes('HOME_WALL_FB'), true);
   // 备忘录回归保险丝：主屏入口 / 生成判重与排除 / 重roll先删再写

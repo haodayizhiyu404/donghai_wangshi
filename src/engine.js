@@ -5,11 +5,10 @@
 (function () {
   'use strict';
 
-  // 图片主源：catbox（东海卡组头像/表情全在 catbox，裸文件名零改动直取）。
-  // 兜底源：donghai_wangshi 仓库 img/（将来把图片镜像进仓库后自动生效，见 init 的回退监听）。
-  // 注意 catbox 在个别内置浏览器拦截名单里会整域裂图——届时把图片传仓库、主次互换即可。
-  var IMG_BASE = 'https://files.catbox.moe/';
-  var IMG_BASE_FALLBACK = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/donghai_wangshi@main/img/';
+  // 图片主源：phone-assets 共享图床仓库（jsdelivr，国内快且稳）；
+  // 兜底源：catbox（世界书里的裸文件名即 catbox 文件，零改动直取）。
+  var IMG_BASE = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/phone-assets@main/img/';
+  var IMG_BASE_FALLBACK = 'https://files.catbox.moe/';
 
   // 注入块的日期相对标签（与手机界面/提示词同一套口径）
   function parseDayE(s) {

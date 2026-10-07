@@ -268,7 +268,8 @@
     }).filter(function (g) { return g.name; });
     return {
       contacts: contacts, groups: groups,
-      moments: { cover: String((sec.moments || {}).cover || '').trim() }
+      moments: { cover: String((sec.moments || {}).cover || '').trim() },
+      wall: String(sec.wall || '').trim()   // 主屏壁纸（catbox 裸文件名），缺省用引擎默认壁纸
     };
   }
 
@@ -396,6 +397,7 @@
           });
           (rsec.groups || []).forEach(function (g) { if (g.avatar) preAdd(g.avatar); });
           if (rsec.moments && rsec.moments.cover) preAdd(rsec.moments.cover);
+          if (rsec.wall) preAdd(rsec.wall);
         }
         for (var sk in result.stickers) preAdd(result.stickers[sk]);
         for (var pi = 0; pi < preList.length; pi++) { var pim = new Image(); pim.src = preList[pi]; }

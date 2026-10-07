@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════
 //  东海往事 · 数字世界引擎（构建产物，勿手改）
 //  源码见 src/ · 构建：node build/build.js
-//  构建时间（本地）：2026-10-07 01:47
+//  构建时间（本地）：2026-10-07 09:45
 // ═══════════════════════════════════════════════════════════
-var __DHWJ_BUILD__ = '2026-10-07 01:47';
+var __DHWJ_BUILD__ = '2026-10-07 09:45';
 try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } catch (e) {}
 
 // ── src/store.js ──
@@ -662,7 +662,8 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
     }).filter(function (g) { return g.name; });
     return {
       contacts: contacts, groups: groups,
-      moments: { cover: String((sec.moments || {}).cover || '').trim() }
+      moments: { cover: String((sec.moments || {}).cover || '').trim() },
+      wall: String(sec.wall || '').trim()   // 主屏壁纸（catbox 裸文件名），缺省用引擎默认壁纸
     };
   }
 
@@ -790,6 +791,7 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
           });
           (rsec.groups || []).forEach(function (g) { if (g.avatar) preAdd(g.avatar); });
           if (rsec.moments && rsec.moments.cover) preAdd(rsec.moments.cover);
+          if (rsec.wall) preAdd(rsec.wall);
         }
         for (var sk in result.stickers) preAdd(result.stickers[sk]);
         for (var pi = 0; pi < preList.length; pi++) { var pim = new Image(); pim.src = preList[pi]; }
@@ -2181,20 +2183,37 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
   }
   // 主屏壁纸（浅色可爱系；换图只改这里）。必须定义在 CSS 数组之前——
   // 数组在脚本加载时立即求值，引用晚于它的变量会得到 undefined。
-  // 壁纸主源 catbox（与全卡图床一致），jsdelivr 兜底：探针失败时把 CSS 变量切到镜像源重渲染。
-  // （2rg9in.jpg 同时也镜像在 linzhou-world 图床仓库，兜底源直取该仓库。）
+  // 主屏壁纸。默认图写死在此；世界书通讯录给当前线配 "wall": "catbox文件名"（与 moments.cover 同级）
+  // 即可整卡换壁纸——文件名同时放 catbox 与 phone-assets 图床仓库，主源失败自动落兜底源。
   var HOME_WALL = 'https://files.catbox.moe/2rg9in.jpg';
   var HOME_WALL_FB = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/linzhou-world@main/img/2rg9in.jpg';
-  // 预载壁纸：引擎加载时就拉取，避免首次打开手机屏幕空白 1~2 秒；
-  // onerror 说明主源被拦/丢失 → 换兜底源并重写 CSS 变量（壁纸在 CSS 里，<img> 回退监听管不到）
-  try {
-    var _wallPre = new Image();
-    _wallPre.onerror = function () {
-      HOME_WALL = HOME_WALL_FB;
-      try { window.DHWJ.Apps.wechat.injectStyle(); } catch (e) {}
-    };
-    _wallPre.src = HOME_WALL;
-  } catch (e) {}
+  // 壁纸双源解析：世界书「wall」字段优先，缺省默认壁纸。返回 {main, fb}。
+  function wallSources() {
+    try {
+      var sec = window.DHWJ.Engine && window.DHWJ.Engine.section && window.DHWJ.Engine.section();
+      var f = sec && String(sec.wall || '').trim();
+      if (f) {
+        var base = (window.DHWJ.IMG_BASE || 'https://files.catbox.moe/');
+        return { main: base + f, fb: 'https://files.catbox.moe/' + f };
+      }
+    } catch (e) {}
+    return { main: HOME_WALL, fb: HOME_WALL_FB };
+  }
+  // 应用壁纸：写 CSS 变量 + 挂探针——主源被拦/丢失时自动切兜底源重写。
+  // injectStyle 每次重入都会调用：世界书重载后换图立即生效，不用刷新页面。
+  function applyWall() {
+    var src = wallSources();
+    try { pdoc().documentElement.style.setProperty('--dhwj-wall', 'url("' + src.main + '")'); } catch (e) {}
+    try {
+      var probe = new Image();
+      probe.onerror = function () {
+        if (src.main === src.fb) return;
+        try { pdoc().documentElement.style.setProperty('--dhwj-wall', 'url("' + src.fb + '")'); } catch (e) {}
+      };
+      probe.src = src.main;
+    } catch (e) {}
+  }
+  try { applyWall(); } catch (e) {}   // 引擎加载即预热（此时 Engine 未就绪，取默认壁纸）
   function parseDay(s) {
     var m = /(\d+)年(\d+)月(\d+)日/.exec(s || '');
     return m ? { y: +m[1], mo: +m[2], d: +m[3] } : null;
@@ -2881,8 +2900,8 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
       // 样式三段拼：uikit 通用件 → 备忘录（独立 app）→ 微信主样式（后写优先级高）
       st.textContent = window.DHWJ.Uikit.css + '\n' +
         (window.DHWJ.DiaryApp ? window.DHWJ.DiaryApp.css + '\n' : '') + CSS;
-      // 壁纸走 CSS 变量：主源加载失败时探针 onerror 改 HOME_WALL 后重入本函数即换源
-      try { doc.documentElement.style.setProperty('--dhwj-wall', 'url("' + HOME_WALL + '")'); } catch (e) {}
+      // 壁纸走 CSS 变量：世界书「wall」字段可换，主源失败探针自动切兜底源（见模块顶 applyWall）
+      try { applyWall(); } catch (e) {}
     },
 
     inject: function () {
@@ -4951,11 +4970,10 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
 (function () {
   'use strict';
 
-  // 图片主源：catbox（东海卡组头像/表情全在 catbox，裸文件名零改动直取）。
-  // 兜底源：donghai_wangshi 仓库 img/（将来把图片镜像进仓库后自动生效，见 init 的回退监听）。
-  // 注意 catbox 在个别内置浏览器拦截名单里会整域裂图——届时把图片传仓库、主次互换即可。
-  var IMG_BASE = 'https://files.catbox.moe/';
-  var IMG_BASE_FALLBACK = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/donghai_wangshi@main/img/';
+  // 图片主源：phone-assets 共享图床仓库（jsdelivr，国内快且稳）；
+  // 兜底源：catbox（世界书里的裸文件名即 catbox 文件，零改动直取）。
+  var IMG_BASE = 'https://cdn.jsdelivr.net/gh/haodayizhiyu404/phone-assets@main/img/';
+  var IMG_BASE_FALLBACK = 'https://files.catbox.moe/';
 
   // 注入块的日期相对标签（与手机界面/提示词同一套口径）
   function parseDayE(s) {
