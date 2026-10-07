@@ -211,7 +211,8 @@ ctx.getWorldbook = async () => [
         style: '节奏快', crowd: '超百人，多为陌生人',
         members: ['周言', '{{user}}', '陆飞', '外校生']
       }],
-      wall: 'testwall.jpg'
+      wall: 'testwall.jpg',
+      wallInk: 'light'
     }
   }) },
   { comment: '周言', enabled: true, content: '周言的单人条目内容（短标题兜底）' },
@@ -242,6 +243,7 @@ ctx.getWorldbook = async () => [
   eq('群members滤掉user宏', g0.members.indexOf('{{user}}') === -1, true);
   eq('联系人avatar透传', (wb.rosters['DLC·高中'].contacts || [])[0].avatar, 'a.png');
   eq('壁纸wall字段透传', wb.rosters['DLC·高中'].wall, 'testwall.jpg');
+  eq('壁纸wallInk字段透传', wb.rosters['DLC·高中'].wallInk, 'light');
   eq('短标题条目兜底档案', wb.profiles['周言'], '周言的单人条目内容（短标题兜底）');
   eq('人设条目优先于块', wb.profiles['林溪'], '林溪的手机专用档案');
   // 线作用域条目：只进线库，不再进全局池（防两条线共用一版档案）

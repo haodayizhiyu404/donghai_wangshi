@@ -65,8 +65,17 @@
           var d = cx.getImageData(0, 0, 24, 24).data;
           var sum = 0, n = 0;
           for (var i = 0; i < d.length; i += 4) { sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
-          // 深色背景（平均亮度<110）→ <html> 挂 dhwj-wall-dark，桌面时钟/应用名/状态栏反白
-          pdoc().documentElement.classList.toggle('dhwj-wall-dark', (sum / n) < 110);
+          var avg = sum / n;
+          // 白字判定（dhwj-wall-dark=白字+暗描影）：手动 wallInk 优先，否则自动——
+          // 只有很亮的背景（avg≥165，如浅色可爱系默认壁纸）才用深色字；中间调/暗调一律白字，
+          // 对壁纸类图片更稳（花纹复杂的中明度图白字可读性更好）。
+          var ink = '';
+          try {
+            var sec2 = window.DHWJ.Engine && window.DHWJ.Engine.section && window.DHWJ.Engine.section();
+            ink = sec2 && String(sec2.wallInk || '').trim();
+          } catch (e) {}
+          var lightText = ink ? (ink !== 'dark') : (avg < 165);
+          pdoc().documentElement.classList.toggle('dhwj-wall-dark', lightText);
         } catch (e) {}
       };
       probe.src = src.main;

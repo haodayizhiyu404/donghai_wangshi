@@ -269,7 +269,8 @@
     return {
       contacts: contacts, groups: groups,
       moments: { cover: String((sec.moments || {}).cover || '').trim() },
-      wall: String(sec.wall || '').trim()   // 主屏壁纸（catbox 裸文件名），缺省用引擎默认壁纸
+      wall: String(sec.wall || '').trim(),   // 主屏壁纸（catbox 裸文件名），缺省用引擎默认壁纸
+      wallInk: String(sec.wallInk || '').trim()   // 桌面文字配色：'light'=白字 / 'dark'=深色字，其他=自动按背景亮度
     };
   }
 
