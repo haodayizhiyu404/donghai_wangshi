@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════
 //  东海往事 · 数字世界引擎（构建产物，勿手改）
 //  源码见 src/ · 构建：node build/build.js
-//  构建时间（本地）：2026-10-07 10:32
+//  构建时间（本地）：2026-10-07 10:36
 // ═══════════════════════════════════════════════════════════
-var __DHWJ_BUILD__ = '2026-10-07 10:32';
+var __DHWJ_BUILD__ = '2026-10-07 10:36';
 try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } catch (e) {}
 
 // ── src/store.js ──
@@ -2347,6 +2347,7 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
     'html.dhwj-wall-dark #dhwj-phone .dhwj-hometime{color:#f2f5fa;text-shadow:0 1px 12px rgba(0,0,0,.6)}',
     'html.dhwj-wall-dark #dhwj-phone .dhwj-scr-home .dhwj-app>span{color:#f2f5fa;text-shadow:0 1px 6px rgba(0,0,0,.55)}',
     'html.dhwj-wall-dark #dhwj-phone .dhwj-scr-home .dhwj-sbar{color:#fff}',
+    'html.dhwj-wall-dark #dhwj-phone .dhwj-scr-home .dhwj-homebar:after{background:rgba(255,255,255,.72)}',
     '.dhwj-homegrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px 8px}',
     '.dhwj-app{display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;color:#fff}',
     '.dhwj-app-ico{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;',
@@ -2555,6 +2556,7 @@ try { console.log('[东海引擎] 构建 ' + __DHWJ_BUILD__ + ' · 启动'); } c
     '.dhwj-scr-call .dhwj-sbar{background:transparent}',
     '.dhwj-scr-call .dhwj-homebar{background:transparent}',
     '.dhwj-scr-call .dhwj-homebar:after{background:rgba(255,255,255,.72)}', // 底部横条反白
+    '.dhwj-scr-home .dhwj-homebar{background:transparent}',   // 桌面页横条透明，融入壁纸（横条本身仍压在壁纸上）
     // 通话黑底：只反白时间/信号图标，灵动岛保持纯黑不反白
     '.dhwj-scr-call .dhwj-sbar .dhwj-clock,.dhwj-scr-call .dhwj-sbar .dhwj-sicons{filter:invert(1)}',
     '.dhwj-callmid{justify-content:space-between;width:100%;padding:0 42px;align-items:center}',
